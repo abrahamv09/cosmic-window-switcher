@@ -1,0 +1,32 @@
+[package]
+name = "cosmic-window-switcher"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-3.0-only"
+description = "A native Window switcher for the COSMIC desktop"
+repository = "https://github.com/abrahamv09/cosmic-window-switcher"
+
+[lib]
+name = "cosmic_window_switcher"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cosmic-window-switcher"
+path = "src/main.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+pedantic = "deny"
+
+[dependencies]
+anyhow = "1.0.100"
+clap = { version = "4.5.53", features = ["derive"] }
+cosmic-client-toolkit = "0.2.0"
+cosmic-protocols = { version = "0.2.0", default-features = false, features = ["client"] }
+smithay-client-toolkit = "0.20.0"
+wayland-client = "0.31.11"
+wayland-protocols = { version = "0.32.9", features = ["client", "staging"] }
