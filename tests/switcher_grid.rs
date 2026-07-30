@@ -113,3 +113,33 @@ fn closing_an_item_removes_it_without_reordering_survivors() {
     );
     assert!(grid.items()[1].is_selected());
 }
+
+#[test]
+fn viewport_scrolls_only_when_the_selected_row_leaves_the_visible_rows() {
+    let mut grid = SwitcherGrid::new(
+        SessionDisplay::from("eDP-1"),
+        (0..8).map(|index| {
+            item(
+                &format!("window-{index}"),
+                "com.example.Application",
+                &format!("Window {index}"),
+            )
+        }),
+        &WindowId::from("window-1"),
+    )
+    .expect("the selected Window belongs to the grid");
+
+    assert_eq!(grid.visible_item_range(2, 2), 0..4);
+
+    grid.select(&WindowId::from("window-6"))
+        .expect("the selected Window belongs to the grid");
+    assert_eq!(grid.visible_item_range(2, 2), 4..8);
+
+    grid.select(&WindowId::from("window-4"))
+        .expect("the selected Window belongs to the grid");
+    assert_eq!(grid.visible_item_range(2, 2), 4..8);
+
+    grid.select(&WindowId::from("window-2"))
+        .expect("the selected Window belongs to the grid");
+    assert_eq!(grid.visible_item_range(2, 2), 2..6);
+}

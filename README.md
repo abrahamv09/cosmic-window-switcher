@@ -96,7 +96,7 @@ modifier activates the selection. An invocation without a hold modifier uses
 Latch Mode, where Enter activates and Escape cancels. A single Eligible Window
 is a no-op.
 
-If the reveal delay expires, the service reveals a centered item grid in stable
+If the reveal delay expires, the service reveals a centered Switcher Grid in stable
 MRU Order. Each Switcher Item uses its installed application icon when
 available, an application-identity monogram fallback otherwise, its Window
 title, and a high-contrast selected state. The same names, positions, focus,

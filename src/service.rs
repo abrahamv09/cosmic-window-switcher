@@ -15,6 +15,7 @@ use cosmic_window_switcher::{InvocationDirection, ServiceDiagnostics, SwitcherSe
 
 mod accessibility;
 mod diagnostics;
+mod icons;
 mod invocation;
 mod overlay;
 mod window_observer;

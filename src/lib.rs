@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{error::Error, fmt, ops::BitOr};
+use std::{
+    error::Error,
+    fmt,
+    ops::{BitOr, Range},
+};
 
 pub const APPLICATION_ID: &str = "io.github.abrahamv09.CosmicWindowSwitcher";
 
@@ -390,6 +394,7 @@ impl Error for UnknownGridSelection {}
 pub struct SwitcherGrid {
     session_display: SessionDisplay,
     items: Vec<SwitcherItem>,
+    first_visible_row: usize,
 }
 
 impl SwitcherGrid {
@@ -409,6 +414,7 @@ impl SwitcherGrid {
         let mut grid = Self {
             session_display,
             items,
+            first_visible_row: 0,
         };
         grid.select(selected)?;
         Ok(grid)
@@ -422,6 +428,38 @@ impl SwitcherGrid {
     #[must_use]
     pub fn items(&self) -> &[SwitcherItem] {
         &self.items
+    }
+
+    /// Returns the item range for a viewport that scrolls only enough to keep
+    /// the selected row visible.
+    ///
+    /// `columns` and `visible_rows` are normalized to at least one.
+    pub fn visible_item_range(&mut self, columns: usize, visible_rows: usize) -> Range<usize> {
+        if self.items.is_empty() {
+            self.first_visible_row = 0;
+            return 0..0;
+        }
+        let columns = columns.max(1);
+        let rows = self.items.len().div_ceil(columns);
+        let visible_rows = visible_rows.max(1).min(rows);
+        let selected_index = self
+            .items
+            .iter()
+            .position(SwitcherItem::is_selected)
+            .unwrap_or(0);
+        let selected_row = selected_index / columns;
+        self.first_visible_row = self
+            .first_visible_row
+            .min(rows.saturating_sub(visible_rows));
+        if selected_row < self.first_visible_row {
+            self.first_visible_row = selected_row;
+        } else if selected_row >= self.first_visible_row + visible_rows {
+            self.first_visible_row = selected_row + 1 - visible_rows;
+        }
+
+        let first_item = self.first_visible_row * columns;
+        let last_item = (first_item + visible_rows * columns).min(self.items.len());
+        first_item..last_item
     }
 
     /// Changes the selected item without changing MRU Order.

@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{collections::HashMap, path::Path};
-
 use anyhow::{Context, Result};
 use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
-use cosmic_window_switcher::{ApplicationIcon, SwitcherGrid, SwitcherItem};
-use image::imageops::FilterType;
+use cosmic_window_switcher::{SwitcherGrid, SwitcherItem};
+
+use super::icons::{IconImage, IconResolver};
 
 const ITEM_WIDTH: u32 = 220;
 const ITEM_HEIGHT: u32 = 116;
@@ -42,7 +41,7 @@ impl OverlayRenderer {
 
     pub(super) fn render(
         &mut self,
-        grid: &SwitcherGrid,
+        grid: &mut SwitcherGrid,
         maximum_logical_width: u32,
         maximum_logical_height: u32,
         scale: i32,
@@ -60,16 +59,10 @@ impl OverlayRenderer {
         let maximum_rows =
             ((available_height - 2 * GRID_PADDING + ITEM_GAP) / (ITEM_HEIGHT + ITEM_GAP)).max(1);
         let visible_rows = rows.min(maximum_rows);
-        let selected_index = grid
-            .items()
-            .iter()
-            .position(SwitcherItem::is_selected)
-            .and_then(|index| u32::try_from(index).ok())
-            .unwrap_or(0);
-        let selected_row = selected_index / columns;
-        let first_visible_row = selected_row.saturating_add(1).saturating_sub(visible_rows);
-        let first_visible_item = first_visible_row * columns;
-        let last_visible_item = first_visible_item + visible_rows * columns;
+        let visible_item_range = grid.visible_item_range(
+            usize::try_from(columns).context("too many Switcher Grid columns")?,
+            usize::try_from(visible_rows).context("too many visible Switcher Grid rows")?,
+        );
         let logical_width =
             2 * GRID_PADDING + columns * ITEM_WIDTH + columns.saturating_sub(1) * ITEM_GAP;
         let logical_height = 2 * GRID_PADDING
@@ -95,15 +88,15 @@ impl OverlayRenderer {
         );
 
         for (index, item) in grid.items().iter().enumerate() {
-            let index = u32::try_from(index).context("too many Switcher Items")?;
-            if !(first_visible_item..last_visible_item).contains(&index) {
+            if !visible_item_range.contains(&index) {
                 continue;
             }
+            let visible_index = index - visible_item_range.start;
             self.draw_item(
                 &mut pixels,
                 physical_width,
                 item,
-                index - first_visible_item,
+                u32::try_from(visible_index).context("too many visible Switcher Items")?,
                 columns,
                 (physical_scale, font_scale),
             );
@@ -384,118 +377,20 @@ fn application_color(application_id: &str) -> Color {
     )
 }
 
-#[derive(Clone)]
-struct IconImage {
-    width: u32,
-    height: u32,
-    pixels: Vec<u8>,
-}
-
-#[derive(Default)]
-struct IconResolver {
-    cache: HashMap<(String, u32), Option<IconImage>>,
-}
-
-impl IconResolver {
-    fn resolve(&mut self, icon: &ApplicationIcon, target_size: u32) -> Option<&IconImage> {
-        let key = (icon.name().to_owned(), target_size);
-        self.cache
-            .entry(key)
-            .or_insert_with(|| load_icon(icon.name(), target_size))
-            .as_ref()
-    }
-}
-
-fn load_icon(name: &str, target_size: u32) -> Option<IconImage> {
-    if name.trim().is_empty() {
-        return None;
-    }
-    let size = u16::try_from(target_size).unwrap_or(u16::MAX);
-    let path = freedesktop_icons::lookup(name)
-        .with_size(size)
-        .with_cache()
-        .find()
-        .or_else(|| {
-            let lowercase = name.to_lowercase();
-            freedesktop_icons::lookup(&lowercase)
-                .with_size(size)
-                .with_cache()
-                .find()
-        })?;
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("svg") => {
-            load_svg_icon(&path, target_size)
-        }
-        _ => load_raster_icon(&path, target_size),
-    }
-}
-
-fn load_raster_icon(path: &Path, target_size: u32) -> Option<IconImage> {
-    let image = image::ImageReader::open(path)
-        .ok()?
-        .with_guessed_format()
-        .ok()?
-        .decode()
-        .ok()?
-        .resize(target_size, target_size, FilterType::Lanczos3)
-        .into_rgba8();
-    Some(IconImage {
-        width: image.width(),
-        height: image.height(),
-        pixels: image.into_raw(),
-    })
-}
-
-fn load_svg_icon(path: &Path, target_size: u32) -> Option<IconImage> {
-    let data = std::fs::read(path).ok()?;
-    let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
-    let size = tree.size();
-    let target_size_f32 = f32::from(u16::try_from(target_size).ok()?);
-    let scale = (target_size_f32 / size.width()).min(target_size_f32 / size.height());
-    let rendered_width = size.width() * scale;
-    let rendered_height = size.height() * scale;
-    let transform = resvg::tiny_skia::Transform::from_row(
-        scale,
-        0.0,
-        0.0,
-        scale,
-        (target_size_f32 - rendered_width) / 2.0,
-        (target_size_f32 - rendered_height) / 2.0,
-    );
-    let mut pixmap = resvg::tiny_skia::Pixmap::new(target_size, target_size)?;
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
-    let mut pixels = pixmap.take();
-    for pixel in pixels.chunks_exact_mut(4) {
-        let alpha = pixel[3];
-        if alpha == 0 {
-            continue;
-        }
-        for channel in &mut pixel[..3] {
-            *channel = u8::try_from((u16::from(*channel) * u16::from(u8::MAX)) / u16::from(alpha))
-                .unwrap_or(u8::MAX);
-        }
-    }
-    Some(IconImage {
-        width: target_size,
-        height: target_size,
-        pixels,
-    })
-}
-
 fn draw_icon(pixels: &mut [u32], surface_width: u32, bounds: Rect, icon: &IconImage) {
-    let offset_x = bounds.x + bounds.width.saturating_sub(icon.width) / 2;
-    let offset_y = bounds.y + bounds.height.saturating_sub(icon.height) / 2;
-    for icon_y in 0..icon.height {
-        for icon_x in 0..icon.width {
+    let offset_x = bounds.x + bounds.width.saturating_sub(icon.width()) / 2;
+    let offset_y = bounds.y + bounds.height.saturating_sub(icon.height()) / 2;
+    for icon_y in 0..icon.height() {
+        for icon_x in 0..icon.width() {
             let Some(index) = icon_y
-                .checked_mul(icon.width)
+                .checked_mul(icon.width())
                 .and_then(|index| index.checked_add(icon_x))
                 .and_then(|index| index.checked_mul(4))
                 .and_then(|index| usize::try_from(index).ok())
             else {
                 continue;
             };
-            let Some(rgba) = icon.pixels.get(index..index + 4) else {
+            let Some(rgba) = icon.pixels().get(index..index + 4) else {
                 continue;
             };
             blend_rect(

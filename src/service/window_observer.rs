@@ -285,10 +285,11 @@ impl ProtocolObserver {
         }
         drop(service);
         if grid_changed && self.grid.is_some() {
-            self.accessibility
-                .update(self.grid.as_ref().expect("the Switcher Grid is present"));
             if let Err(error) = self.render_grid() {
                 self.fail_overlay("render Switcher Grid after Window closure failed", &error);
+            } else if self.interaction.visible {
+                self.accessibility
+                    .update(self.grid.as_ref().expect("the Switcher Grid is present"));
             }
         }
     }
@@ -553,8 +554,6 @@ impl ProtocolObserver {
             SwitcherGrid::new(session_display, items, selected)
                 .context("the Initial Selection is absent from the Switcher Grid")?,
         );
-        self.accessibility
-            .update(self.grid.as_ref().expect("the Switcher Grid is present"));
         self.render_grid()
     }
 
@@ -564,9 +563,12 @@ impl ProtocolObserver {
             .context("the Switching Session has no Switcher Grid")?
             .select(selected)
             .context("the selected Window is absent from the Switcher Grid")?;
-        self.accessibility
-            .update(self.grid.as_ref().expect("the Switcher Grid is present"));
-        self.render_grid()
+        self.render_grid()?;
+        if self.interaction.visible {
+            self.accessibility
+                .update(self.grid.as_ref().expect("the Switcher Grid is present"));
+        }
+        Ok(())
     }
 
     fn render_grid(&mut self) -> Result<()> {
@@ -588,7 +590,7 @@ impl ProtocolObserver {
             .map_or(800, |height| height.saturating_mul(4) / 5);
         let rendered = self.overlay_renderer.render(
             self.grid
-                .as_ref()
+                .as_mut()
                 .context("the Switching Session has no Switcher Grid")?,
             maximum_width,
             maximum_height,
@@ -636,8 +638,11 @@ impl ProtocolObserver {
     }
 
     fn show_grid(&mut self) -> Result<()> {
+        self.attach_grid_buffer()?;
         self.interaction.visible = true;
-        self.attach_grid_buffer()
+        self.accessibility
+            .update(self.grid.as_ref().context("the Switcher Grid is absent")?);
+        Ok(())
     }
 
     fn attach_grid_buffer(&self) -> Result<()> {
@@ -900,7 +905,12 @@ impl KeyboardHandler for ProtocolObserver {
                 },
                 self.session_window_order.clone(),
             );
+        let invocation_became_a_no_op = effects.is_empty() && self.session_window_order.len() < 2;
         self.apply_effects(effects);
+        if invocation_became_a_no_op {
+            self.destroy_overlay();
+            return;
+        }
         self.try_mark_ready();
     }
 
