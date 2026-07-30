@@ -288,6 +288,36 @@ fn every_card_size_preset_remains_fixed_as_window_count_grows() {
 }
 
 #[test]
+fn responsive_large_cards_follow_window_count_width_targets() {
+    for (window_count, expected_size) in [
+        (1, (640, 480)),
+        (2, (640, 480)),
+        (3, (480, 360)),
+        (9, (448, 336)),
+    ] {
+        let mut grid = SwitcherGrid::new(
+            SessionDisplay::from("eDP-1"),
+            (0..window_count).map(|index| {
+                item(
+                    &format!("window-{index}"),
+                    "com.example.Application",
+                    &format!("Window {index}"),
+                )
+            }),
+            &WindowId::from("window-0"),
+        )
+        .expect("the selected Window belongs to the grid");
+
+        let layout = grid.responsive_layout(1_600, 900, CardSize::Large);
+
+        assert_eq!(
+            layout.item_bounds(0).map(GridRect::size),
+            Some(expected_size)
+        );
+    }
+}
+
+#[test]
 fn fractional_scale_maps_logical_grid_geometry_to_exact_buffer_dimensions() {
     let scale = FractionalScale::from_protocol_units(150);
 

@@ -39,7 +39,7 @@
   final two criteria still requires a human session with ten visible Windows,
   so the ticket is handed off as `ready-for-human` rather than marked resolved.
 - Final verification passed formatting, all-target type checking, strict
-  all-target/all-feature Clippy, all 97 tests, and an optimized release build.
+  all-target/all-feature Clippy, all 100 tests, and an optimized release build.
 - Manual restart exposed a latent runtime-feature conflict from the settings
   implementation: libcosmic enabled zbus's Tokio backend while the resident
   service uses zbus's blocking API. Switching libcosmic to its supported smol
@@ -60,3 +60,13 @@
   capture. The supplied screenshots contain live content, so that state still
   needs a post-capture screenshot or exact persistence steps before it can be
   reproduced and diagnosed without guessing.
+- Follow-up visual validation requested count-responsive cards. Large cards now
+  use about 40% of display width for one or two Windows, 30% for three, and 28%
+  for larger sets; Medium and Small preserve their preference meaning as 90%
+  and 80% density multipliers. Metadata dimensions remain capped as previews
+  grow, and the title line is vertically centered.
+- Live compositor inventory identified icon aliases `vlc` and
+  `MongoDB Compass`, while their installed Flatpak desktop/icon IDs are
+  `org.videolan.VLC` and `com.mongodb.Compass`. The icon resolver now maps raw
+  compositor identities through standard desktop-entry ID, name, and
+  `StartupWMClass` metadata instead of showing fallback monograms.

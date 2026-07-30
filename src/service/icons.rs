@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use cosmic_window_switcher::ApplicationIcon;
 use image::imageops::FilterType;
@@ -50,7 +53,19 @@ fn load_icon(name: &str, target_size: u32) -> Option<IconImage> {
         return None;
     }
     let size = u16::try_from(target_size).unwrap_or(u16::MAX);
-    let path = freedesktop_icons::lookup(name)
+    let path = find_icon(name, size).or_else(|| {
+        desktop_icon_name(name).and_then(|canonical_name| find_icon(&canonical_name, size))
+    })?;
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("svg") => {
+            load_svg_icon(&path, target_size)
+        }
+        _ => load_raster_icon(&path, target_size),
+    }
+}
+
+fn find_icon(name: &str, size: u16) -> Option<PathBuf> {
+    freedesktop_icons::lookup(name)
         .with_size(size)
         .with_cache()
         .find()
@@ -60,13 +75,83 @@ fn load_icon(name: &str, target_size: u32) -> Option<IconImage> {
                 .with_size(size)
                 .with_cache()
                 .find()
-        })?;
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some(extension) if extension.eq_ignore_ascii_case("svg") => {
-            load_svg_icon(&path, target_size)
-        }
-        _ => load_raster_icon(&path, target_size),
+        })
+}
+
+fn desktop_icon_name(application_id: &str) -> Option<String> {
+    desktop_application_directories()
+        .into_iter()
+        .filter_map(|directory| std::fs::read_dir(directory).ok())
+        .flatten()
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let path = entry.path();
+            let desktop_id = path.file_stem().and_then(|file_name| file_name.to_str())?;
+            let contents = std::fs::read_to_string(&path).ok()?;
+            desktop_entry_icon_name(application_id, desktop_id, &contents)
+        })
+}
+
+fn desktop_application_directories() -> Vec<PathBuf> {
+    let mut data_directories = Vec::new();
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        data_directories.push(data_home);
+    } else if let Some(home) = std::env::var_os("HOME") {
+        data_directories.push(PathBuf::from(home).join(".local/share"));
     }
+    data_directories.extend(std::env::var_os("XDG_DATA_DIRS").map_or_else(
+        || {
+            vec![
+                PathBuf::from("/usr/local/share"),
+                PathBuf::from("/usr/share"),
+            ]
+        },
+        |directories| std::env::split_paths(&directories).collect::<Vec<_>>(),
+    ));
+    data_directories
+        .into_iter()
+        .map(|directory| directory.join("applications"))
+        .collect()
+}
+
+fn desktop_entry_icon_name(
+    application_id: &str,
+    desktop_id: &str,
+    contents: &str,
+) -> Option<String> {
+    let mut in_desktop_entry = false;
+    let mut name = None;
+    let mut icon = None;
+    let mut startup_wm_class = None;
+    for line in contents.lines().map(str::trim) {
+        if line.starts_with('[') && line.ends_with(']') {
+            in_desktop_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if !in_desktop_entry || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        match key {
+            "Name" if name.is_none() => name = Some(value),
+            "Icon" if icon.is_none() => icon = Some(value),
+            "StartupWMClass" if startup_wm_class.is_none() => {
+                startup_wm_class = Some(value);
+            }
+            _ => {}
+        }
+    }
+
+    let application_id = application_id.trim();
+    let desktop_suffix = desktop_id.rsplit('.').next().unwrap_or(desktop_id);
+    let matches = desktop_id.eq_ignore_ascii_case(application_id)
+        || desktop_suffix.eq_ignore_ascii_case(application_id)
+        || name.is_some_and(|name| name.eq_ignore_ascii_case(application_id))
+        || startup_wm_class
+            .is_some_and(|startup_wm_class| startup_wm_class.eq_ignore_ascii_case(application_id));
+    matches.then(|| icon.unwrap_or(desktop_id).to_owned())
 }
 
 fn load_raster_icon(path: &Path, target_size: u32) -> Option<IconImage> {
@@ -119,4 +204,31 @@ fn load_svg_icon(path: &Path, target_size: u32) -> Option<IconImage> {
         height: target_size,
         pixels,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::desktop_entry_icon_name;
+
+    #[test]
+    fn compositor_aliases_resolve_through_desktop_entry_names_and_ids() {
+        assert_eq!(
+            desktop_entry_icon_name(
+                "vlc",
+                "org.videolan.VLC",
+                "[Desktop Entry]\nName=VLC media player\nIcon=org.videolan.VLC\n",
+            )
+            .as_deref(),
+            Some("org.videolan.VLC")
+        );
+        assert_eq!(
+            desktop_entry_icon_name(
+                "MongoDB Compass",
+                "com.mongodb.Compass",
+                "[Desktop Entry]\nName=MongoDB Compass\nIcon=com.mongodb.Compass\n",
+            )
+            .as_deref(),
+            Some("com.mongodb.Compass")
+        );
+    }
 }

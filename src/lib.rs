@@ -518,6 +518,29 @@ impl CardSize {
             Self::Large => (400, 300),
         }
     }
+
+    #[must_use]
+    pub fn responsive_logical_size(self, item_count: usize, display_width: u32) -> (u32, u32) {
+        let width_percentage = match item_count {
+            0..=2 => 40_u64,
+            3 => 30,
+            _ => 28,
+        };
+        let (density_numerator, density_denominator) = match self {
+            Self::Small => (4_u64, 5_u64),
+            Self::Medium => (9, 10),
+            Self::Large => (1, 1),
+        };
+        let width = u64::from(display_width)
+            .saturating_mul(width_percentage)
+            .saturating_mul(density_numerator)
+            / (100 * density_denominator);
+        let width = u32::try_from(width)
+            .unwrap_or(u32::MAX)
+            .max(1)
+            .min(display_width.max(1));
+        (width, width.saturating_mul(3) / 4)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -791,7 +814,34 @@ impl SwitcherGrid {
         maximum_logical_height: u32,
         card_size: CardSize,
     ) -> GridLayout {
-        let (card_width, card_height) = card_size.logical_size();
+        self.layout_with_card_dimensions(
+            maximum_logical_width,
+            maximum_logical_height,
+            card_size.logical_size(),
+        )
+    }
+
+    #[must_use]
+    pub fn responsive_layout(
+        &mut self,
+        display_logical_width: u32,
+        display_logical_height: u32,
+        card_size: CardSize,
+    ) -> GridLayout {
+        self.layout_with_card_dimensions(
+            display_logical_width.saturating_mul(19) / 20,
+            display_logical_height.saturating_mul(19) / 20,
+            card_size.responsive_logical_size(self.items.len(), display_logical_width),
+        )
+    }
+
+    fn layout_with_card_dimensions(
+        &mut self,
+        maximum_logical_width: u32,
+        maximum_logical_height: u32,
+        card_size: (u32, u32),
+    ) -> GridLayout {
+        let (card_width, card_height) = card_size;
         let available_width =
             maximum_logical_width.max(card_width.saturating_add(2 * GRID_PADDING));
         let columns = ((available_width - 2 * GRID_PADDING + GRID_ITEM_GAP)

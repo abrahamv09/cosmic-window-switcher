@@ -18,19 +18,26 @@ struct CardGeometry {
     title_gap: u32,
     title_font_size: f32,
     title_line_height: f32,
+    title_y: u32,
+    title_height: u32,
 }
 
 fn card_geometry(item_width: u32, item_height: u32) -> CardGeometry {
-    let footer_height = (item_height / 6).max(1);
-    let title_font_size = f32::from(u16::try_from(item_height).unwrap_or(u16::MAX)) / 22.0;
+    let footer_height = (item_height / 6).clamp(30, 50);
+    let title_font_size =
+        (f32::from(u16::try_from(item_height).unwrap_or(u16::MAX)) / 22.0).min(14.0);
+    let title_height = item_height.saturating_mul(5).div_ceil(88).clamp(1, 18);
+    let footer_top = item_height.saturating_sub(footer_height);
     CardGeometry {
-        thumbnail_padding: (item_width / 64).max(3),
+        thumbnail_padding: (item_width / 64).clamp(3, 7),
         footer_height,
-        footer_padding: (item_width / 32).max(3),
-        icon_size: footer_height.saturating_mul(2) / 3,
-        title_gap: (item_width / 64).max(3),
+        footer_padding: (item_width / 32).clamp(3, 13),
+        icon_size: (footer_height.saturating_mul(2) / 3).min(34),
+        title_gap: (item_width / 64).clamp(3, 7),
         title_font_size,
-        title_line_height: title_font_size * 1.25,
+        title_line_height: f32::from(u16::try_from(title_height).unwrap_or(u16::MAX)),
+        title_y: footer_top + footer_height.saturating_sub(title_height) / 2,
+        title_height,
     }
 }
 
@@ -83,11 +90,7 @@ impl OverlayRenderer {
             u16::try_from(scale.protocol_units()).context("fractional scale is too large")?,
         ) / 120.0;
         let layout = grid
-            .layout(
-                surface_logical_width.saturating_mul(4) / 5,
-                surface_logical_height.saturating_mul(4) / 5,
-                card_size,
-            )
+            .responsive_layout(surface_logical_width, surface_logical_height, card_size)
             .centered_in(surface_logical_width, surface_logical_height);
         let visible_item_range = layout.visible_item_range();
         let logical_width = surface_logical_width;
@@ -246,15 +249,14 @@ impl OverlayRenderer {
             );
         }
         let title_x = footer_padding + icon_size + geometry.title_gap;
-        let title_y = footer_top + footer_height.saturating_sub(icon_size) / 2;
         self.draw_text(
             pixels,
             surface_width,
             item.title(),
             x + scale.physical_length(title_x),
-            y + scale.physical_length(title_y),
+            y + scale.physical_length(geometry.title_y),
             scale.physical_length(item_width.saturating_sub(title_x + footer_padding)),
-            scale.physical_length(icon_size),
+            scale.physical_length(geometry.title_height),
             geometry.title_font_size * font_scale,
             geometry.title_line_height * font_scale,
             Color::rgb(250, 251, 255),
@@ -587,11 +589,21 @@ mod card_geometry_tests {
 
     #[test]
     fn card_geometry_prioritizes_thumbnail_content_over_metadata() {
-        let geometry = card_geometry(400, 300);
+        for geometry in [card_geometry(400, 300), card_geometry(658, 493)] {
+            assert!(geometry.thumbnail_padding <= 7);
+            assert!(geometry.footer_height <= 50);
+            assert!(geometry.icon_size <= 34);
+            assert!(geometry.title_font_size <= 14.0);
+        }
+    }
 
-        assert!(geometry.thumbnail_padding <= 7);
-        assert!(geometry.footer_height <= 50);
-        assert!(geometry.icon_size <= 34);
-        assert!(geometry.title_font_size <= 14.0);
+    #[test]
+    fn title_line_is_vertically_centered_in_the_footer() {
+        let geometry = card_geometry(400, 300);
+        let footer_top = 300 - geometry.footer_height;
+        let space_above = geometry.title_y.saturating_sub(footer_top);
+        let space_below = 300_u32.saturating_sub(geometry.title_y + geometry.title_height);
+
+        assert!(space_above.abs_diff(space_below) <= 1);
     }
 }
