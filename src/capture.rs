@@ -27,7 +27,7 @@ pub enum DmaBufFallbackReason {
     UnsupportedModifier,
     AllocationFailed,
     SynchronizationUnavailable,
-    ImportFailed,
+    ImportUnavailable,
     ReleaseUnavailable,
 }
 
@@ -40,8 +40,22 @@ impl DmaBufFallbackReason {
             Self::UnsupportedModifier => "unsupported-modifier",
             Self::AllocationFailed => "allocation-failed",
             Self::SynchronizationUnavailable => "synchronization-unavailable",
-            Self::ImportFailed => "import-failed",
+            Self::ImportUnavailable => "import-unavailable",
             Self::ReleaseUnavailable => "release-unavailable",
+        }
+    }
+
+    #[must_use]
+    pub fn from_diagnostic_name(name: &str) -> Option<Self> {
+        match name {
+            "incompatible-device" => Some(Self::IncompatibleDevice),
+            "unsupported-format" => Some(Self::UnsupportedFormat),
+            "unsupported-modifier" => Some(Self::UnsupportedModifier),
+            "allocation-failed" => Some(Self::AllocationFailed),
+            "synchronization-unavailable" => Some(Self::SynchronizationUnavailable),
+            "import-unavailable" => Some(Self::ImportUnavailable),
+            "release-unavailable" => Some(Self::ReleaseUnavailable),
+            _ => None,
         }
     }
 }
@@ -54,7 +68,29 @@ pub struct CaptureBackendSelection {
 
 impl Default for CaptureBackendSelection {
     fn default() -> Self {
-        Self::shared_memory(DmaBufFallbackReason::ImportFailed)
+        Self::shared_memory(DmaBufFallbackReason::ImportUnavailable)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CaptureBackendState {
+    #[default]
+    NotNegotiated,
+    Active(CaptureBackendSelection),
+}
+
+impl CaptureBackendState {
+    #[must_use]
+    pub const fn active(selection: CaptureBackendSelection) -> Self {
+        Self::Active(selection)
+    }
+
+    #[must_use]
+    pub const fn selection(self) -> Option<CaptureBackendSelection> {
+        match self {
+            Self::NotNegotiated => None,
+            Self::Active(selection) => Some(selection),
+        }
     }
 }
 
@@ -122,7 +158,7 @@ impl DmaBufCompatibility {
         } else if self.synchronization == DmaBufContractStatus::Incompatible {
             Some(DmaBufFallbackReason::SynchronizationUnavailable)
         } else if self.import == DmaBufContractStatus::Incompatible {
-            Some(DmaBufFallbackReason::ImportFailed)
+            Some(DmaBufFallbackReason::ImportUnavailable)
         } else if self.release == DmaBufContractStatus::Incompatible {
             Some(DmaBufFallbackReason::ReleaseUnavailable)
         } else {

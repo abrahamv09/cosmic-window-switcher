@@ -85,7 +85,7 @@ fn every_incompatible_dma_buf_stage_falls_back_to_shared_memory() {
                 import: DmaBufContractStatus::Incompatible,
                 ..DmaBufCompatibility::complete()
             },
-            DmaBufFallbackReason::ImportFailed,
+            DmaBufFallbackReason::ImportUnavailable,
         ),
         (
             DmaBufCompatibility {

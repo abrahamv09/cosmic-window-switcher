@@ -9,7 +9,7 @@ use zbus::{
 };
 
 use cosmic_window_switcher::{
-    CaptureBackend, CaptureBackendSelection, DmaBufCompatibility, DmaBufFallbackReason,
+    CaptureBackendSelection, CaptureBackendState, DmaBufCompatibility, DmaBufFallbackReason,
     InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics, WindowId, WindowScope,
     WorkspaceEligibilityState,
 };
@@ -124,15 +124,14 @@ impl From<ServiceDiagnostics> for DbusDiagnostics {
 
 impl From<ServiceDiagnostics> for DbusDiagnosticsV2 {
     fn from(diagnostics: ServiceDiagnostics) -> Self {
+        let selection = diagnostics.capture_backend.selection();
         Self {
-            capture_backend: diagnostics
-                .capture_backend
-                .backend()
-                .diagnostic_name()
+            capture_backend: selection
+                .map(|selection| selection.backend().diagnostic_name())
+                .unwrap_or_default()
                 .to_owned(),
-            capture_backend_fallback: diagnostics
-                .capture_backend
-                .fallback_reason()
+            capture_backend_fallback: selection
+                .and_then(CaptureBackendSelection::fallback_reason)
                 .map_or_else(String::new, |reason| reason.diagnostic_name().to_owned()),
             diagnostics: diagnostics.into(),
         }
@@ -182,29 +181,28 @@ impl From<DbusDiagnostics> for ServiceDiagnostics {
                 }
                 _ => WorkspaceEligibilityState::AwaitingSnapshot,
             },
-            capture_backend: CaptureBackendSelection::default(),
+            capture_backend: CaptureBackendState::NotNegotiated,
         }
     }
 }
 
 impl From<DbusDiagnosticsV2> for ServiceDiagnostics {
     fn from(diagnostics: DbusDiagnosticsV2) -> Self {
-        let fallback_reason = match diagnostics.capture_backend_fallback.as_str() {
-            "incompatible-device" => DmaBufFallbackReason::IncompatibleDevice,
-            "unsupported-format" => DmaBufFallbackReason::UnsupportedFormat,
-            "unsupported-modifier" => DmaBufFallbackReason::UnsupportedModifier,
-            "allocation-failed" => DmaBufFallbackReason::AllocationFailed,
-            "synchronization-unavailable" => DmaBufFallbackReason::SynchronizationUnavailable,
-            "release-unavailable" => DmaBufFallbackReason::ReleaseUnavailable,
-            _ => DmaBufFallbackReason::ImportFailed,
-        };
         let mut service_diagnostics = ServiceDiagnostics::from(diagnostics.diagnostics);
-        service_diagnostics.capture_backend =
-            if diagnostics.capture_backend == CaptureBackend::DmaBuf.diagnostic_name() {
-                DmaBufCompatibility::complete().select_backend()
-            } else {
-                CaptureBackendSelection::shared_memory(fallback_reason)
-            };
+        service_diagnostics.capture_backend = match diagnostics.capture_backend.as_str() {
+            "dma-buf" => {
+                CaptureBackendState::active(DmaBufCompatibility::complete().select_backend())
+            }
+            "shared-memory" => {
+                DmaBufFallbackReason::from_diagnostic_name(&diagnostics.capture_backend_fallback)
+                    .map(CaptureBackendSelection::shared_memory)
+                    .map_or(
+                        CaptureBackendState::NotNegotiated,
+                        CaptureBackendState::active,
+                    )
+            }
+            _ => CaptureBackendState::NotNegotiated,
+        };
         service_diagnostics
     }
 }
@@ -282,7 +280,7 @@ mod tests {
                 mru_order: vec![WindowId::from("opaque")],
                 window_scope: WindowScope::AllWorkspaces,
                 workspace_eligibility: state,
-                capture_backend: CaptureBackendSelection::default(),
+                capture_backend: CaptureBackendState::NotNegotiated,
             };
 
             assert_eq!(
@@ -296,7 +294,7 @@ mod tests {
             mru_order: Vec::new(),
             window_scope: WindowScope::VisibleWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::Ready,
-            capture_backend: CaptureBackendSelection::default(),
+            capture_backend: CaptureBackendState::NotNegotiated,
         };
         assert_eq!(
             ServiceDiagnostics::from(DbusDiagnostics::from(visible.clone())),
@@ -315,7 +313,7 @@ mod tests {
             CaptureBackendSelection::shared_memory(
                 DmaBufFallbackReason::SynchronizationUnavailable,
             ),
-            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::ImportFailed),
+            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::ImportUnavailable),
             CaptureBackendSelection::shared_memory(DmaBufFallbackReason::ReleaseUnavailable),
         ];
 
@@ -325,7 +323,7 @@ mod tests {
                 mru_order: vec![WindowId::from("opaque")],
                 window_scope: WindowScope::AllWorkspaces,
                 workspace_eligibility: WorkspaceEligibilityState::Ready,
-                capture_backend,
+                capture_backend: CaptureBackendState::active(capture_backend),
             };
 
             assert_eq!(

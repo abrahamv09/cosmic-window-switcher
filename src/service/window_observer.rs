@@ -54,13 +54,14 @@ use wayland_protocols::wp::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, AccessibilityPolicy, CaptureEffect, CaptureFailure, CaptureOpportunity,
-    CaptureSessionModel, DesktopSnapshot, FractionalScale, GridLayout, HoldModifiers,
-    InvocationDirection, InvocationRequest, Locale, OverlayPresentation, PreferencesStore,
-    REVEAL_ANIMATION_DURATION, RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay,
-    SessionPreferences, ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent,
-    WindowEvent, WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState,
-    WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
+    APPLICATION_ID, AccessibilityPolicy, CaptureBackendSelection, CaptureEffect, CaptureFailure,
+    CaptureOpportunity, CaptureSessionModel, DesktopSnapshot, DmaBufFallbackReason,
+    FractionalScale, GridLayout, HoldModifiers, InvocationDirection, InvocationRequest, Locale,
+    OverlayPresentation, PreferencesStore, REVEAL_ANIMATION_DURATION, RefreshCeiling,
+    ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences, ShmConstraints,
+    ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowScope,
+    WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
+    WorkspaceSnapshot,
 };
 
 use super::{
@@ -163,6 +164,18 @@ pub(super) struct WindowObserver {
     pending_invocations: PendingInvocations,
 }
 
+fn publish_capture_backend(service: &SharedService) {
+    // The current software overlay consumes CPU-backed ThumbnailFrame pixels
+    // and has no DMA-BUF import boundary, so the complete contract deliberately
+    // selects the proven SHM backend.
+    service
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .set_capture_backend(CaptureBackendSelection::shared_memory(
+            DmaBufFallbackReason::ImportUnavailable,
+        ));
+}
+
 impl WindowObserver {
     pub(super) fn connect(
         service: SharedService,
@@ -191,6 +204,7 @@ impl WindowObserver {
             .bind_one::<wp_viewporter::WpViewporter, _, _>(&queue_handle, 1..=1, ())
             .ok();
         let capture_backend = ShmCaptureState::new(&globals, &queue_handle);
+        publish_capture_backend(&service);
         let foreign_toplevel_list = registry_state
             .bind_one::<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
                 &queue_handle,
@@ -208,7 +222,6 @@ impl WindowObserver {
         let toplevel_manager = ToplevelManagerState::try_new(&registry_state, &queue_handle)
             .context("the compositor does not expose COSMIC Window management")?;
         let workspace_state = WorkspaceState::new(&registry_state, &queue_handle);
-        let preferences = PreferenceState::open()?;
         let state = ProtocolObserver {
             queue_handle: queue_handle.clone(),
             registry_state,
@@ -237,7 +250,7 @@ impl WindowObserver {
             toplevel_snapshot_received: false,
             accessibility: AccessibilityBridge::new(Locale::detect()),
             overlay_renderer: OverlayRenderer::new(),
-            preferences,
+            preferences: PreferenceState::open()?,
             layer: None,
             readiness_pool: None,
             readiness_buffer: None,
@@ -2309,7 +2322,7 @@ mod tests {
                 mru_order: vec![WindowId::from("activated"), WindowId::from("delayed")],
                 window_scope: WindowScope::AllWorkspaces,
                 workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
-                capture_backend: cosmic_window_switcher::CaptureBackendSelection::default(),
+                capture_backend: cosmic_window_switcher::CaptureBackendState::NotNegotiated,
             }
         );
     }

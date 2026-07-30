@@ -15,10 +15,10 @@ pub use accessibility::{
     AccessibilityPolicy, AccessibleSwitcherItem, OverlayPresentation, REVEAL_ANIMATION_DURATION,
 };
 pub use capture::{
-    BufferTransform, CaptureBackend, CaptureBackendSelection, CaptureEffect, CaptureFailure,
-    CaptureOpportunity, CaptureSessionModel, DmaBufCompatibility, DmaBufContractStatus,
-    DmaBufFallbackReason, FrameDamage, InvalidThumbnailFrame, RefreshCeiling, ShmConstraints,
-    ShmFormat, ShmFrameLayout, ThumbnailFrame,
+    BufferTransform, CaptureBackend, CaptureBackendSelection, CaptureBackendState, CaptureEffect,
+    CaptureFailure, CaptureOpportunity, CaptureSessionModel, DmaBufCompatibility,
+    DmaBufContractStatus, DmaBufFallbackReason, FrameDamage, InvalidThumbnailFrame, RefreshCeiling,
+    ShmConstraints, ShmFormat, ShmFrameLayout, ThumbnailFrame,
 };
 pub use localization::{Locale, StringKey};
 pub use preferences::{
@@ -1237,7 +1237,7 @@ pub struct ServiceDiagnostics {
     pub mru_order: Vec<WindowId>,
     pub window_scope: WindowScope,
     pub workspace_eligibility: WorkspaceEligibilityState,
-    pub capture_backend: CaptureBackendSelection,
+    pub capture_backend: CaptureBackendState,
 }
 
 impl ServiceDiagnostics {
@@ -1260,10 +1260,7 @@ impl ServiceDiagnostics {
             localized_status(
                 locale,
                 StringKey::CaptureBackend,
-                match self.capture_backend.backend() {
-                    CaptureBackend::DmaBuf => StringKey::DmaBuf,
-                    CaptureBackend::SharedMemory => StringKey::SharedMemory,
-                },
+                capture_backend_key(self.capture_backend),
             ),
             localized_status(locale, StringKey::MruHistory, mru_history),
             format!(
@@ -1274,7 +1271,11 @@ impl ServiceDiagnostics {
             localized_status(locale, StringKey::WindowScope, window_scope),
             localized_status(locale, StringKey::WorkspaceFiltering, workspace_filtering),
         ];
-        if let Some(reason) = self.capture_backend.fallback_reason() {
+        if let Some(reason) = self
+            .capture_backend
+            .selection()
+            .and_then(CaptureBackendSelection::fallback_reason)
+        {
             lines.insert(
                 2,
                 localized_status(
@@ -1294,7 +1295,9 @@ impl ServiceDiagnostics {
                         DmaBufFallbackReason::SynchronizationUnavailable => {
                             StringKey::DmaBufSynchronizationUnavailable
                         }
-                        DmaBufFallbackReason::ImportFailed => StringKey::DmaBufImportFailed,
+                        DmaBufFallbackReason::ImportUnavailable => {
+                            StringKey::DmaBufImportUnavailable
+                        }
                         DmaBufFallbackReason::ReleaseUnavailable => {
                             StringKey::DmaBufReleaseUnavailable
                         }
@@ -1316,6 +1319,14 @@ impl ServiceDiagnostics {
             );
         }
         lines.join("\n")
+    }
+}
+
+fn capture_backend_key(state: CaptureBackendState) -> StringKey {
+    match state.selection().map(CaptureBackendSelection::backend) {
+        Some(CaptureBackend::DmaBuf) => StringKey::DmaBuf,
+        Some(CaptureBackend::SharedMemory) => StringKey::SharedMemory,
+        None => StringKey::NotNegotiated,
     }
 }
 
@@ -1510,7 +1521,7 @@ pub struct SwitcherService {
     active_session: Option<ActiveSession>,
     window_scope: WindowScope,
     workspace_eligibility: WorkspaceEligibilityState,
-    capture_backend: CaptureBackendSelection,
+    capture_backend: CaptureBackendState,
 }
 
 impl SwitcherService {
@@ -1522,9 +1533,7 @@ impl SwitcherService {
             active_session: None,
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
-            capture_backend: CaptureBackendSelection::shared_memory(
-                DmaBufFallbackReason::ImportFailed,
-            ),
+            capture_backend: CaptureBackendState::NotNegotiated,
         }
     }
 
@@ -1541,7 +1550,7 @@ impl SwitcherService {
     }
 
     pub const fn set_capture_backend(&mut self, selection: CaptureBackendSelection) {
-        self.capture_backend = selection;
+        self.capture_backend = CaptureBackendState::active(selection);
     }
 
     #[must_use]
