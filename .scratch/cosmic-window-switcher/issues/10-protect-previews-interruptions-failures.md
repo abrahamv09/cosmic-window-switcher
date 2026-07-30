@@ -15,3 +15,11 @@
 - [ ] No telemetry or automatic crash upload is introduced.
 - [ ] Lifecycle and service-scenario tests verify cleanup after every interruption point and backend state.
 
+## Comments
+
+- Live validation on 2026-07-30 observed the resident service exit after a
+  successful cross-workspace activation because the Wayland read following
+  poll readiness returned `EAGAIN` (`Resource temporarily unavailable`). Treat
+  nonblocking `WouldBlock` as a retryable lifecycle condition and add a
+  red-capable event-loop regression seam. A transient user service with
+  `Restart=on-failure` is being used only as a development-session workaround.
