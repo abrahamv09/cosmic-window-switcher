@@ -8,16 +8,17 @@
 
 **Progress:** partially completed
 
-**Waiting on:** Upstream COSMIC compositor support for the advertised initial
-toplevel output/workspace membership snapshot and atomic `done` event.
+**Waiting on:** Human confirmation that activating a Window from another
+workspace follows it correctly and that the deterministic output fallback
+places the overlay acceptably.
 
-- [x] Live workspace groups, outputs, active state, and Window membership determine eligibility without copying a competing workspace-mode preference.
+- [x] All Workspaces includes every foreign application toplevel; the retained Visible Workspaces scope derives eligibility from live state without copying a competing workspace-mode preference.
 - [x] Spanning workspaces include their visible Windows across all displays.
 - [x] Separate-display workspaces include the active workspace from each display.
 - [x] Minimized Windows remain eligible and restore when activated.
 - [x] Independently exposed dialogs and utility Windows are eligible; panels, docks, menus, notifications, and overlays are excluded.
 - [x] Native Wayland and compositor-managed XWayland Windows share one MRU Order and activation behavior.
-- [x] The sole overlay appears on the display containing the initially focused Window and preserves fullscreen state.
+- [x] The sole overlay prefers the initially focused Window's display, deterministically falls back to an assigned output when COSMIC omits that membership, and preserves fullscreen state.
 - [x] Runtime COSMIC Workspace Policy changes affect the next Switching Session without restarting the service.
 - [ ] Live and service-scenario tests cover available multi-monitor, workspace, minimized, dialog, shell-surface, fullscreen, and mixed Window-type cases.
 
@@ -46,3 +47,9 @@ toplevel output/workspace membership snapshot and atomic `done` event.
   matrix remains incomplete until the compositor supplies the advertised
   snapshot. See
   `.scratch/cosmic-window-switcher/upstream/cosmic-comp-workspace-move-capability-mismatch.md`.
+- Product decision on 2026-07-30: All Workspaces is now the default Window
+  Scope so the custom switcher can run without per-Window workspace membership.
+  Every foreign application toplevel participates in one global MRU Order.
+  Visible-workspace derivation remains implemented as a stricter future scope,
+  and the missing compositor snapshot remains diagnostic rather than an
+  invocation blocker. Implemented in commit `f489938`.
