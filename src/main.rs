@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 
 mod cosmic_session;
 mod probe;
+mod service;
 mod workspace_move_probe;
 
 #[derive(Debug, Parser)]
@@ -20,6 +21,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the resident Switcher Service.
+    Service,
+    /// Report the resident service's current MRU Order.
+    Status,
     /// Run the interactive two-Window COSMIC integration probe.
     Probe {
         /// Include Window titles in temporary probe output.
@@ -42,6 +47,11 @@ enum Command {
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::Service => service::run(),
+        Command::Status => {
+            println!("{}", service::status()?);
+            Ok(())
+        }
         Command::Probe { include_titles } => probe::run(include_titles),
         Command::ProbeWorkspaceMove {
             window,

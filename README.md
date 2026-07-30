@@ -1,11 +1,10 @@
 # COSMIC Window Switcher
 
 COSMIC Window Switcher is a native Rust Window switcher for the COSMIC desktop.
-The current executable contains integration probes for Window switching and
-workspace-move capability verification. They exercise Window discovery,
-memory-only shared-memory capture, exclusive keyboard input, Window activation,
-workspace topology, and capability-gated workspace movement against a live
-COSMIC compositor.
+The executable includes a resident Switcher Service plus integration probes for
+Window switching and workspace-move capability verification. The service
+observes Window focus metadata throughout a COSMIC Session and keeps the current
+MRU Order without opening a visible Window or starting thumbnail capture.
 
 The stable application identity is
 `io.github.abrahamv09.CosmicWindowSwitcher`. The project is licensed under
@@ -56,6 +55,26 @@ capture fails; a capture failure is printed against that Window identity.
 
 The probe intentionally has no visible grid yet. It is a ticket 1 tracer bullet,
 not the finished switcher service.
+
+## Run the Switcher Service
+
+Start the resident service from a COSMIC Wayland session:
+
+```sh
+cargo run --release -- service
+```
+
+Only one process can own the service's user-session D-Bus name. In another
+terminal, inspect the current MRU Order:
+
+```sh
+cargo run --release -- status
+```
+
+`status` reports either `mru_history: accurate` or `mru_history: warm-up`.
+Warm-up means the service restarted with pre-existing Windows whose relative
+focus history cannot be reconstructed. Opaque Window identities are shown so
+the order can be verified; Window titles and pixels are never included.
 
 ## Verify workspace-move capability
 

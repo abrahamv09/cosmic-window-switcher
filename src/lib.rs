@@ -389,3 +389,87 @@ impl WorkspaceMoveVerification {
         })
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryAccuracy {
+    WarmUp,
+    Accurate,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServiceDiagnostics {
+    pub history: HistoryAccuracy,
+    pub mru_order: Vec<WindowId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WindowEvent {
+    Discovered(WindowId),
+    Activated(WindowId),
+    Closed(WindowId),
+}
+
+#[derive(Clone, Debug)]
+struct TrackedWindow {
+    id: WindowId,
+    activation_observed: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SwitcherService {
+    windows: Vec<TrackedWindow>,
+    initial_discovery_complete: bool,
+}
+
+impl SwitcherService {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            windows: Vec::new(),
+            initial_discovery_complete: false,
+        }
+    }
+
+    pub const fn complete_initial_discovery(&mut self) {
+        self.initial_discovery_complete = true;
+    }
+
+    pub fn observe(&mut self, event: WindowEvent) {
+        match event {
+            WindowEvent::Discovered(id) => {
+                if !self.windows.iter().any(|window| window.id == id) {
+                    self.windows.push(TrackedWindow {
+                        id,
+                        activation_observed: self.initial_discovery_complete,
+                    });
+                }
+            }
+            WindowEvent::Activated(id) => {
+                if let Some(position) = self.windows.iter().position(|window| window.id == id) {
+                    let mut window = self.windows.remove(position);
+                    window.activation_observed = true;
+                    self.windows.insert(0, window);
+                }
+            }
+            WindowEvent::Closed(id) => {
+                self.windows.retain(|window| window.id != id);
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn diagnostics(&self) -> ServiceDiagnostics {
+        ServiceDiagnostics {
+            history: if self.windows.iter().all(|window| window.activation_observed) {
+                HistoryAccuracy::Accurate
+            } else {
+                HistoryAccuracy::WarmUp
+            },
+            mru_order: self
+                .windows
+                .iter()
+                .map(|window| window.id.clone())
+                .collect(),
+        }
+    }
+}
