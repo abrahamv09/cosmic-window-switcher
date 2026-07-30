@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId, WindowScope,
-    WorkspaceEligibilityState,
+    Locale, MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId,
+    WindowScope, WorkspaceEligibilityState,
 };
 
 fn window(id: &str) -> WindowId {
@@ -151,6 +151,23 @@ fn status_diagnostics_report_mru_warm_up_without_window_titles() {
         diagnostics.to_string(),
         "service: running\nmru_history: warm-up\nwindow_count: 2\nwindow_scope: all-workspaces\nworkspace_filtering: not-required\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot\nmru_order:\n  1. opaque-a\n  2. opaque-b"
     );
+}
+
+#[test]
+fn status_diagnostics_are_available_in_spanish() {
+    let diagnostics = ServiceDiagnostics {
+        mru_history: MruHistoryAccuracy::Accurate,
+        mru_order: vec![window("opaque-a")],
+        window_scope: WindowScope::AllWorkspaces,
+        workspace_eligibility: WorkspaceEligibilityState::Ready,
+    };
+
+    let localized = diagnostics.localized(Locale::Spanish);
+
+    assert!(localized.contains("servicio: activo"));
+    assert!(localized.contains("cantidad_de_ventanas: 1"));
+    assert!(localized.contains("elegibilidad_de_espacios: listo"));
+    assert!(!localized.contains("service: running"));
 }
 
 #[test]

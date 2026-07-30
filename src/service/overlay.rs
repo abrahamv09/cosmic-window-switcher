@@ -96,6 +96,7 @@ impl OverlayRenderer {
                 presentation,
             );
         }
+        apply_opacity(&mut pixels, presentation.rendered_opacity());
 
         let mut bytes = Vec::with_capacity(pixels.len() * size_of::<u32>());
         for pixel in pixels {
@@ -275,6 +276,26 @@ impl OverlayRenderer {
                 blend_rect(pixels, surface_width, glyph_rect, color);
             },
         );
+    }
+}
+
+fn apply_opacity(pixels: &mut [u32], opacity: u8) {
+    if opacity == u8::MAX {
+        return;
+    }
+    let scale = |channel: u8| {
+        u8::try_from(u16::from(channel) * u16::from(opacity) / u16::from(u8::MAX))
+            .unwrap_or(u8::MAX)
+    };
+    for pixel in pixels {
+        let color = Color(*pixel);
+        *pixel = Color::rgba(
+            scale(color.r()),
+            scale(color.g()),
+            scale(color.b()),
+            scale(color.a()),
+        )
+        .0;
     }
 }
 

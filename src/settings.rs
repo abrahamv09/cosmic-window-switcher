@@ -19,10 +19,37 @@ use cosmic_window_switcher::{
     StringKey, SwitcherPreferences,
 };
 
+const CARD_SIZES: [CardSize; 3] = [CardSize::Small, CardSize::Medium, CardSize::Large];
+const CARD_SIZE_KEYS: [StringKey; 3] = [StringKey::Small, StringKey::Medium, StringKey::Large];
+const DIMMING_LEVELS: [Dimming; 3] = [Dimming::Off, Dimming::Light, Dimming::Strong];
+const DIMMING_KEYS: [StringKey; 3] = [StringKey::Off, StringKey::Light, StringKey::Strong];
+const REFRESH_CEILINGS: [RefreshCeiling; 4] = [
+    RefreshCeiling::Fps15,
+    RefreshCeiling::Fps30,
+    RefreshCeiling::Fps60,
+    RefreshCeiling::MatchDisplay,
+];
+const REFRESH_CEILING_KEYS: [StringKey; 4] = [
+    StringKey::Fps15,
+    StringKey::Fps30,
+    StringKey::Fps60,
+    StringKey::MatchDisplay,
+];
+const REVEAL_DELAYS: [RevealDelay; 3] = [
+    RevealDelay::Immediate,
+    RevealDelay::Milliseconds100,
+    RevealDelay::Milliseconds200,
+];
+const REVEAL_DELAY_KEYS: [StringKey; 3] = [
+    StringKey::Immediate,
+    StringKey::Milliseconds100,
+    StringKey::Milliseconds200,
+];
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct ShortcutStatus {
-    next: Option<String>,
-    previous: Option<String>,
+    next: Vec<String>,
+    previous: Vec<String>,
 }
 
 impl ShortcutStatus {
@@ -32,9 +59,31 @@ impl ShortcutStatus {
         };
         let configured = shortcuts::shortcuts(&context);
         Self {
-            next: configured.shortcut_for_action(&Action::System(WindowSwitcher)),
-            previous: configured.shortcut_for_action(&Action::System(WindowSwitcherPrevious)),
+            next: bindings_for(&configured, &Action::System(WindowSwitcher)),
+            previous: bindings_for(&configured, &Action::System(WindowSwitcherPrevious)),
         }
+    }
+}
+
+fn bindings_for(configured: &shortcuts::Shortcuts, action: &Action) -> Vec<String> {
+    let mut bindings = configured
+        .iter()
+        .filter(|(_, candidate)| *candidate == action)
+        .map(|(binding, _)| binding.to_string())
+        .collect::<Vec<_>>();
+    bindings.sort_unstable();
+    bindings
+}
+
+fn localized_options(locale: Locale, keys: &[StringKey]) -> Vec<String> {
+    keys.iter().map(|key| locale.text(*key)).collect()
+}
+
+fn shortcut_label(bindings: &[String], not_assigned: &str) -> String {
+    if bindings.is_empty() {
+        not_assigned.to_owned()
+    } else {
+        bindings.join(", ")
     }
 }
 
@@ -70,11 +119,11 @@ struct SettingsApp {
 
 #[derive(Clone, Debug)]
 enum Message {
-    CardSize(usize),
-    Dimming(usize),
-    RefreshCeiling(usize),
+    CardSize(CardSize),
+    Dimming(Dimming),
+    RefreshCeiling(RefreshCeiling),
     Animations(bool),
-    RevealDelay(usize),
+    RevealDelay(RevealDelay),
     OpenKeyboardSettings,
 }
 
@@ -102,74 +151,31 @@ impl cosmic::Application for SettingsApp {
             shortcuts: flags.shortcuts,
             save_error: None,
         };
-        app.set_header_title(app.locale.text(StringKey::SettingsTitle).to_owned());
+        app.set_header_title(app.locale.text(StringKey::SettingsTitle));
         let task = app.core.main_window_id().map_or_else(Task::none, |window| {
-            app.set_window_title(app.locale.text(StringKey::SettingsTitle).to_owned(), window)
+            app.set_window_title(app.locale.text(StringKey::SettingsTitle), window)
         });
         (app, task)
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         let next = match message {
-            Message::CardSize(index) => SwitcherPreferences::new(
-                [CardSize::Small, CardSize::Medium, CardSize::Large]
-                    .get(index)
-                    .copied()
-                    .unwrap_or(self.preferences.card_size()),
-                self.preferences.dimming(),
-                self.preferences.refresh_ceiling(),
-                self.preferences.animations_enabled(),
-                self.preferences.reveal_delay(),
-            ),
-            Message::Dimming(index) => SwitcherPreferences::new(
-                self.preferences.card_size(),
-                [Dimming::Off, Dimming::Light, Dimming::Strong]
-                    .get(index)
-                    .copied()
-                    .unwrap_or(self.preferences.dimming()),
-                self.preferences.refresh_ceiling(),
-                self.preferences.animations_enabled(),
-                self.preferences.reveal_delay(),
-            ),
-            Message::RefreshCeiling(index) => SwitcherPreferences::new(
-                self.preferences.card_size(),
-                self.preferences.dimming(),
-                [
-                    RefreshCeiling::Fps15,
-                    RefreshCeiling::Fps30,
-                    RefreshCeiling::Fps60,
-                    RefreshCeiling::MatchDisplay,
-                ]
-                .get(index)
-                .copied()
-                .unwrap_or(self.preferences.refresh_ceiling()),
-                self.preferences.animations_enabled(),
-                self.preferences.reveal_delay(),
-            ),
-            Message::Animations(enabled) => SwitcherPreferences::new(
-                self.preferences.card_size(),
-                self.preferences.dimming(),
-                self.preferences.refresh_ceiling(),
-                enabled,
-                self.preferences.reveal_delay(),
-            ),
-            Message::RevealDelay(index) => SwitcherPreferences::new(
-                self.preferences.card_size(),
-                self.preferences.dimming(),
-                self.preferences.refresh_ceiling(),
-                self.preferences.animations_enabled(),
-                [
-                    RevealDelay::Immediate,
-                    RevealDelay::Milliseconds100,
-                    RevealDelay::Milliseconds200,
-                ]
-                .get(index)
-                .copied()
-                .unwrap_or(self.preferences.reveal_delay()),
-            ),
+            Message::CardSize(card_size) => self.preferences.clone().with_card_size(card_size),
+            Message::Dimming(dimming) => self.preferences.clone().with_dimming(dimming),
+            Message::RefreshCeiling(refresh_ceiling) => self
+                .preferences
+                .clone()
+                .with_refresh_ceiling(refresh_ceiling),
+            Message::Animations(enabled) => {
+                self.preferences.clone().with_animations_enabled(enabled)
+            }
+            Message::RevealDelay(reveal_delay) => {
+                self.preferences.clone().with_reveal_delay(reveal_delay)
+            }
             Message::OpenKeyboardSettings => {
                 if let Err(error) = Command::new("cosmic-settings").arg("keyboard").spawn() {
-                    self.save_error = Some(error.to_string());
+                    eprintln!("open COSMIC Keyboard Settings failed: {error}");
+                    self.save_error = Some(self.locale.text(StringKey::OpenKeyboardSettingsFailed));
                 }
                 return Task::none();
             }
@@ -180,7 +186,10 @@ impl cosmic::Application for SettingsApp {
                 self.preferences = next;
                 self.save_error = None;
             }
-            Err(error) => self.save_error = Some(error.to_string()),
+            Err(error) => {
+                eprintln!("save Switcher Preferences failed: {error}");
+                self.save_error = Some(self.locale.text(StringKey::SaveFailed));
+            }
         }
         Task::none()
     }
@@ -188,58 +197,46 @@ impl cosmic::Application for SettingsApp {
     fn view(&self) -> Element<'_, Self::Message> {
         let text = |key| self.locale.text(key);
         let card_size = dropdown(
-            vec![
-                text(StringKey::Small).to_owned(),
-                text(StringKey::Medium).to_owned(),
-                text(StringKey::Large).to_owned(),
-            ],
-            Some(match self.preferences.card_size() {
-                CardSize::Small => 0,
-                CardSize::Medium => 1,
-                CardSize::Large => 2,
-            }),
-            Message::CardSize,
+            localized_options(self.locale, &CARD_SIZE_KEYS),
+            CARD_SIZES
+                .iter()
+                .position(|size| *size == self.preferences.card_size()),
+            |index| Message::CardSize(CARD_SIZES.get(index).copied().unwrap_or(CardSize::Medium)),
         );
         let dimming = dropdown(
-            vec![
-                text(StringKey::Off).to_owned(),
-                text(StringKey::Light).to_owned(),
-                text(StringKey::Strong).to_owned(),
-            ],
-            Some(match self.preferences.dimming() {
-                Dimming::Off => 0,
-                Dimming::Light => 1,
-                Dimming::Strong => 2,
-            }),
-            Message::Dimming,
+            localized_options(self.locale, &DIMMING_KEYS),
+            DIMMING_LEVELS
+                .iter()
+                .position(|dimming| *dimming == self.preferences.dimming()),
+            |index| Message::Dimming(DIMMING_LEVELS.get(index).copied().unwrap_or(Dimming::Light)),
         );
         let refresh_ceiling = dropdown(
-            vec![
-                text(StringKey::Fps15).to_owned(),
-                text(StringKey::Fps30).to_owned(),
-                text(StringKey::Fps60).to_owned(),
-                text(StringKey::MatchDisplay).to_owned(),
-            ],
-            Some(match self.preferences.refresh_ceiling() {
-                RefreshCeiling::Fps15 => 0,
-                RefreshCeiling::Fps30 => 1,
-                RefreshCeiling::Fps60 => 2,
-                RefreshCeiling::MatchDisplay => 3,
-            }),
-            Message::RefreshCeiling,
+            localized_options(self.locale, &REFRESH_CEILING_KEYS),
+            REFRESH_CEILINGS
+                .iter()
+                .position(|ceiling| *ceiling == self.preferences.refresh_ceiling()),
+            |index| {
+                Message::RefreshCeiling(
+                    REFRESH_CEILINGS
+                        .get(index)
+                        .copied()
+                        .unwrap_or(RefreshCeiling::Fps30),
+                )
+            },
         );
         let reveal_delay = dropdown(
-            vec![
-                text(StringKey::Immediate).to_owned(),
-                text(StringKey::Milliseconds100).to_owned(),
-                text(StringKey::Milliseconds200).to_owned(),
-            ],
-            Some(match self.preferences.reveal_delay() {
-                RevealDelay::Immediate => 0,
-                RevealDelay::Milliseconds100 => 1,
-                RevealDelay::Milliseconds200 => 2,
-            }),
-            Message::RevealDelay,
+            localized_options(self.locale, &REVEAL_DELAY_KEYS),
+            REVEAL_DELAYS
+                .iter()
+                .position(|delay| *delay == self.preferences.reveal_delay()),
+            |index| {
+                Message::RevealDelay(
+                    REVEAL_DELAYS
+                        .get(index)
+                        .copied()
+                        .unwrap_or(RevealDelay::Milliseconds100),
+                )
+            },
         );
 
         let preferences = settings::section()
@@ -258,17 +255,14 @@ impl cosmic::Application for SettingsApp {
             .add(settings::item::builder(text(StringKey::RevealDelay)).control(reveal_delay));
 
         let not_assigned = text(StringKey::NotAssigned);
+        let next = shortcut_label(&self.shortcuts.next, &not_assigned);
+        let previous = shortcut_label(&self.shortcuts.previous, &not_assigned);
         let shortcuts = settings::section()
             .title(text(StringKey::Shortcuts))
+            .add(settings::item::builder(text(StringKey::NextWindow)).control(widget::text(next)))
             .add(
-                settings::item::builder(text(StringKey::NextWindow)).control(widget::text(
-                    self.shortcuts.next.as_deref().unwrap_or(not_assigned),
-                )),
-            )
-            .add(
-                settings::item::builder(text(StringKey::PreviousWindow)).control(widget::text(
-                    self.shortcuts.previous.as_deref().unwrap_or(not_assigned),
-                )),
+                settings::item::builder(text(StringKey::PreviousWindow))
+                    .control(widget::text(previous)),
             )
             .add(
                 settings::item::builder(text(StringKey::ShortcutInstructions)).control(

@@ -101,8 +101,8 @@ fn tree_update(grid: &SwitcherGrid, locale: Locale) -> TreeUpdate {
         .map(NodeId::from)
         .collect::<Vec<_>>();
     let mut root = Node::new(Role::ListBox);
-    root.set_label(locale.text(StringKey::WindowSwitcher).to_owned());
-    root.set_description(locale.text(StringKey::InteractionInstructions).to_owned());
+    root.set_label(locale.text(StringKey::WindowSwitcher));
+    root.set_description(locale.text(StringKey::InteractionInstructions));
     root.set_children(item_ids.clone());
     root.set_size_of_set(grid.items().len());
 
@@ -135,7 +135,7 @@ fn tree_update(grid: &SwitcherGrid, locale: Locale) -> TreeUpdate {
 
 fn hidden_tree_update(locale: Locale) -> TreeUpdate {
     let mut root = Node::new(Role::ListBox);
-    root.set_label(locale.text(StringKey::WindowSwitcher).to_owned());
+    root.set_label(locale.text(StringKey::WindowSwitcher));
     TreeUpdate {
         nodes: vec![(ROOT_NODE_ID, root)],
         tree: Some(Tree::new(ROOT_NODE_ID)),

@@ -113,6 +113,36 @@ impl SwitcherPreferences {
     pub fn snapshot(&self) -> SessionPreferences {
         SessionPreferences(self.clone())
     }
+
+    #[must_use]
+    pub const fn with_card_size(mut self, card_size: CardSize) -> Self {
+        self.card_size = card_size;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_dimming(mut self, dimming: Dimming) -> Self {
+        self.dimming = dimming;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_refresh_ceiling(mut self, refresh_ceiling: RefreshCeiling) -> Self {
+        self.refresh_ceiling = refresh_ceiling;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_animations_enabled(mut self, animations_enabled: bool) -> Self {
+        self.animations_enabled = animations_enabled;
+        self
+    }
+
+    #[must_use]
+    pub const fn with_reveal_delay(mut self, reveal_delay: RevealDelay) -> Self {
+        self.reveal_delay = reveal_delay;
+        self
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

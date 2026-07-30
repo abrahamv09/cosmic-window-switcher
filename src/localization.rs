@@ -1,5 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::sync::LazyLock;
+
+use fluent_bundle::{FluentArgs, FluentResource, concurrent::FluentBundle};
+use unic_langid::LanguageIdentifier;
+
+type Bundle = FluentBundle<FluentResource>;
+
+static ENGLISH: LazyLock<Bundle> = LazyLock::new(|| {
+    bundle(
+        "en-US",
+        include_str!("../i18n/en/cosmic-window-switcher.ftl"),
+    )
+});
+static SPANISH: LazyLock<Bundle> =
+    LazyLock::new(|| bundle("es", include_str!("../i18n/es/cosmic-window-switcher.ftl")));
+
+fn bundle(language: &str, source: &str) -> Bundle {
+    let language = language
+        .parse::<LanguageIdentifier>()
+        .expect("built-in locale is valid");
+    let resource = FluentResource::try_new(source.to_owned())
+        .expect("built-in Fluent resource contains no syntax errors");
+    let mut bundle = FluentBundle::new_concurrent(vec![language]);
+    bundle
+        .add_resource(resource)
+        .expect("built-in Fluent resource has unique message identifiers");
+    bundle
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Locale {
     #[default]
@@ -32,148 +61,119 @@ impl Locale {
     }
 
     #[must_use]
-    pub const fn text(self, key: StringKey) -> &'static str {
-        match (self, key) {
-            (Self::English, StringKey::SettingsTitle) => "COSMIC Window Switcher Settings",
-            (Self::Spanish, StringKey::SettingsTitle) => {
-                "Ajustes del selector de ventanas de COSMIC"
-            }
-            (Self::English, StringKey::WindowSwitcher) => "COSMIC Window Switcher",
-            (Self::Spanish, StringKey::WindowSwitcher) => "Selector de ventanas de COSMIC",
-            (Self::English, StringKey::CardSize) => "Card size",
-            (Self::Spanish, StringKey::CardSize) => "Tamaño de tarjeta",
-            (Self::English, StringKey::Small) => "Small",
-            (Self::Spanish, StringKey::Small) => "Pequeña",
-            (Self::English, StringKey::Medium) => "Medium",
-            (Self::Spanish, StringKey::Medium) => "Mediana",
-            (Self::English, StringKey::Large) => "Large",
-            (Self::Spanish, StringKey::Large) => "Grande",
-            (Self::English, StringKey::BackgroundDimming) => "Background dimming",
-            (Self::Spanish, StringKey::BackgroundDimming) => "Oscurecimiento del fondo",
-            (Self::English, StringKey::Off) => "Off",
-            (Self::Spanish, StringKey::Off) => "Desactivado",
-            (Self::English, StringKey::Light) => "Light",
-            (Self::Spanish, StringKey::Light) => "Ligero",
-            (Self::English, StringKey::Strong) => "Strong",
-            (Self::Spanish, StringKey::Strong) => "Intenso",
-            (Self::English, StringKey::RefreshCeiling) => "Refresh Ceiling",
-            (Self::Spanish, StringKey::RefreshCeiling) => "Límite de actualización",
-            (Self::English | Self::Spanish, StringKey::Fps15) => "15 FPS",
-            (Self::English | Self::Spanish, StringKey::Fps30) => "30 FPS",
-            (Self::English | Self::Spanish, StringKey::Fps60) => "60 FPS",
-            (Self::English, StringKey::MatchDisplay) => "Match display",
-            (Self::Spanish, StringKey::MatchDisplay) => "Igualar la pantalla",
-            (Self::English, StringKey::MatchDisplayWarning) => {
-                "May use substantially more power and graphics resources."
-            }
-            (Self::Spanish, StringKey::MatchDisplayWarning) => {
-                "Puede usar mucha más energía y recursos gráficos."
-            }
-            (Self::English, StringKey::Animations) => "Animations",
-            (Self::Spanish, StringKey::Animations) => "Animaciones",
-            (Self::English, StringKey::RevealDelay) => "Reveal delay",
-            (Self::Spanish, StringKey::RevealDelay) => "Retraso de aparición",
-            (Self::English, StringKey::Immediate) => "Immediate",
-            (Self::Spanish, StringKey::Immediate) => "Inmediato",
-            (Self::English | Self::Spanish, StringKey::Milliseconds100) => "100 ms",
-            (Self::English | Self::Spanish, StringKey::Milliseconds200) => "200 ms",
-            (Self::English, StringKey::Shortcuts) => "Keyboard shortcuts",
-            (Self::Spanish, StringKey::Shortcuts) => "Atajos de teclado",
-            (Self::English, StringKey::NextWindow) => "Next Window",
-            (Self::Spanish, StringKey::NextWindow) => "Ventana siguiente",
-            (Self::English, StringKey::PreviousWindow) => "Previous Window",
-            (Self::Spanish, StringKey::PreviousWindow) => "Ventana anterior",
-            (Self::English, StringKey::NotAssigned) => "Not assigned",
-            (Self::Spanish, StringKey::NotAssigned) => "Sin asignar",
-            (Self::English, StringKey::OpenKeyboardSettings) => "Open COSMIC Keyboard Settings",
-            (Self::Spanish, StringKey::OpenKeyboardSettings) => {
-                "Abrir los ajustes de teclado de COSMIC"
-            }
-            (Self::English, StringKey::ShortcutInstructions) => {
-                "COSMIC owns shortcut assignment. Change it in Keyboard Settings."
-            }
-            (Self::Spanish, StringKey::ShortcutInstructions) => {
-                "COSMIC controla los atajos. Cámbielos en los ajustes de teclado."
-            }
-            (Self::English, StringKey::InteractionInstructions) => {
-                "Use Tab or Shift+Tab to move, Enter to select, and Escape to cancel."
-            }
-            (Self::Spanish, StringKey::InteractionInstructions) => {
-                "Use Tab o Mayús+Tab para moverse, Intro para elegir y Escape para cancelar."
-            }
-            (Self::English, StringKey::SavedForNextSession) => {
-                "Saved changes apply the next time the switcher opens."
-            }
-            (Self::Spanish, StringKey::SavedForNextSession) => {
-                "Los cambios guardados se aplican la próxima vez que se abra el selector."
-            }
-        }
+    pub fn text(self, key: StringKey) -> String {
+        self.format(key, None)
+    }
+
+    #[must_use]
+    /// Formats a built-in Fluent message.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a built-in resource is missing the requested message or
+    /// contains a formatting error. Both bundled locales are validated by tests.
+    pub fn format(self, key: StringKey, arguments: Option<&FluentArgs<'_>>) -> String {
+        let bundle = match self {
+            Self::English => &*ENGLISH,
+            Self::Spanish => &*SPANISH,
+        };
+        let message = bundle
+            .get_message(key.id())
+            .unwrap_or_else(|| panic!("built-in locale is missing {}", key.id()));
+        let pattern = message
+            .value()
+            .unwrap_or_else(|| panic!("built-in locale message {} has no value", key.id()));
+        let mut errors = Vec::new();
+        let value = bundle
+            .format_pattern(pattern, arguments, &mut errors)
+            .into_owned();
+        assert!(
+            errors.is_empty(),
+            "built-in locale message {} failed to format: {errors:?}",
+            key.id()
+        );
+        value
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StringKey {
-    SettingsTitle,
-    WindowSwitcher,
-    CardSize,
-    Small,
-    Medium,
-    Large,
-    BackgroundDimming,
-    Off,
-    Light,
-    Strong,
-    RefreshCeiling,
-    Fps15,
-    Fps30,
-    Fps60,
-    MatchDisplay,
-    MatchDisplayWarning,
-    Animations,
-    RevealDelay,
-    Immediate,
-    Milliseconds100,
-    Milliseconds200,
-    Shortcuts,
-    NextWindow,
-    PreviousWindow,
-    NotAssigned,
-    OpenKeyboardSettings,
-    ShortcutInstructions,
-    InteractionInstructions,
-    SavedForNextSession,
+macro_rules! string_keys {
+    ($($key:ident => $id:literal),+ $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum StringKey {
+            $($key),+
+        }
+
+        impl StringKey {
+            pub const ALL: [Self; string_keys!(@count $($key),+)] = [
+                $(Self::$key),+
+            ];
+
+            const fn id(self) -> &'static str {
+                match self {
+                    $(Self::$key => $id),+
+                }
+            }
+        }
+    };
+    (@count $($key:ident),+) => {
+        <[()]>::len(&[$(string_keys!(@unit $key)),+])
+    };
+    (@unit $key:ident) => { () };
 }
 
-impl StringKey {
-    pub const ALL: [Self; 29] = [
-        Self::SettingsTitle,
-        Self::WindowSwitcher,
-        Self::CardSize,
-        Self::Small,
-        Self::Medium,
-        Self::Large,
-        Self::BackgroundDimming,
-        Self::Off,
-        Self::Light,
-        Self::Strong,
-        Self::RefreshCeiling,
-        Self::Fps15,
-        Self::Fps30,
-        Self::Fps60,
-        Self::MatchDisplay,
-        Self::MatchDisplayWarning,
-        Self::Animations,
-        Self::RevealDelay,
-        Self::Immediate,
-        Self::Milliseconds100,
-        Self::Milliseconds200,
-        Self::Shortcuts,
-        Self::NextWindow,
-        Self::PreviousWindow,
-        Self::NotAssigned,
-        Self::OpenKeyboardSettings,
-        Self::ShortcutInstructions,
-        Self::InteractionInstructions,
-        Self::SavedForNextSession,
-    ];
-}
+string_keys!(
+    SettingsTitle => "settings-title",
+    WindowSwitcher => "window-switcher",
+    CardSize => "card-size",
+    Small => "small",
+    Medium => "medium",
+    Large => "large",
+    BackgroundDimming => "background-dimming",
+    Off => "off",
+    Light => "light",
+    Strong => "strong",
+    RefreshCeiling => "refresh-ceiling",
+    Fps15 => "fps-15",
+    Fps30 => "fps-30",
+    Fps60 => "fps-60",
+    MatchDisplay => "match-display",
+    MatchDisplayWarning => "match-display-warning",
+    Animations => "animations",
+    RevealDelay => "reveal-delay",
+    Immediate => "immediate",
+    Milliseconds100 => "milliseconds-100",
+    Milliseconds200 => "milliseconds-200",
+    Shortcuts => "shortcuts",
+    NextWindow => "next-window",
+    PreviousWindow => "previous-window",
+    NotAssigned => "not-assigned",
+    OpenKeyboardSettings => "open-keyboard-settings",
+    ShortcutInstructions => "shortcut-instructions",
+    InteractionInstructions => "interaction-instructions",
+    SavedForNextSession => "saved-for-next-session",
+    SaveFailed => "save-failed",
+    OpenKeyboardSettingsFailed => "open-keyboard-settings-failed",
+    Service => "service",
+    Running => "running",
+    MruHistory => "mru-history",
+    WarmUp => "warm-up",
+    Accurate => "accurate",
+    WindowCount => "window-count",
+    WindowScope => "window-scope",
+    AllWorkspaces => "all-workspaces",
+    VisibleWorkspaces => "visible-workspaces",
+    WorkspaceFiltering => "workspace-filtering",
+    NotRequired => "not-required",
+    Required => "required",
+    WorkspaceEligibility => "workspace-eligibility",
+    AwaitingSnapshot => "awaiting-snapshot",
+    Ready => "ready",
+    Unavailable => "unavailable",
+    WorkspaceEligibilityFailure => "workspace-eligibility-failure",
+    NotAdvertised => "not-advertised",
+    MruOrder => "mru-order",
+    ToplevelInfoFailure => "toplevel-info-failure",
+    WorkspaceProtocolFailure => "workspace-protocol-failure",
+    WorkspaceSnapshotFailure => "workspace-snapshot-failure",
+    ToplevelMembershipFailure => "toplevel-membership-failure",
+);

@@ -56,11 +56,11 @@ use wayland_protocols::wp::{
 use cosmic_window_switcher::{
     APPLICATION_ID, AccessibilityPolicy, CaptureEffect, CaptureFailure, CaptureSessionModel,
     DesktopSnapshot, FractionalScale, GridLayout, HoldModifiers, InvocationDirection,
-    InvocationRequest, Locale, OverlayPresentation, PreferencesStore, RefreshCeiling,
-    ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences, ShmConstraints,
-    ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowScope,
-    WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
-    WorkspaceSnapshot,
+    InvocationRequest, Locale, OverlayPresentation, PreferencesStore, REVEAL_ANIMATION_DURATION,
+    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences,
+    ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent,
+    WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot,
+    WorkspaceId, WorkspaceSnapshot,
 };
 
 use super::{
@@ -75,6 +75,7 @@ use crate::shm_capture::{
 };
 
 const SESSION_READINESS_TIMEOUT: Duration = Duration::from_millis(500);
+const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const TOPLEVEL_INFO_INTERFACE: &str = "zcosmic_toplevel_info_v1";
 const WORKSPACE_MANAGER_INTERFACE: &str = "ext_workspace_manager_v1";
 const REQUIRED_TOPLEVEL_INFO_VERSION: u32 = 3;
@@ -99,11 +100,32 @@ fn cosmic_accessibility_policy() -> AccessibilityPolicy {
     let high_contrast = cosmic::theme::system_preference()
         .theme_type
         .is_high_contrast();
-    let reduced_motion = cosmic_config::Config::new("com.system76.CosmicTk", 1)
-        .ok()
-        .and_then(|config| cosmic_config::ConfigGet::get(&config, "reduced_motion").ok())
-        .unwrap_or(false);
+    let reduced_motion = portal_reduced_motion_preference() == Some(1);
     AccessibilityPolicy::new(false, high_contrast, reduced_motion)
+}
+
+fn portal_reduced_motion_preference() -> Option<u32> {
+    let connection = zbus::blocking::Connection::session().ok()?;
+    let proxy = zbus::blocking::Proxy::new(
+        &connection,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Settings",
+    )
+    .ok()?;
+    let value = proxy
+        .call::<_, _, zbus::zvariant::OwnedValue>(
+            "Read",
+            &("org.freedesktop.appearance", "reduced-motion"),
+        )
+        .ok()?;
+    if let Ok(inner) = value.downcast_ref::<zbus::zvariant::Value>() {
+        return inner
+            .try_to_owned()
+            .ok()
+            .and_then(|inner| u32::try_from(inner).ok());
+    }
+    u32::try_from(value).ok()
 }
 
 struct PreferenceState {
@@ -235,6 +257,7 @@ impl WindowObserver {
             initial_hold_modifiers: None,
             reveal_at: None,
             readiness_deadline: None,
+            reveal_animation: RevealAnimation::default(),
         };
 
         Ok(Self {
@@ -274,6 +297,7 @@ impl WindowObserver {
         self.state
             .start_pending_invocation(&self.pending_invocations, &queue_handle);
         self.state.handle_reveal_deadline();
+        self.state.handle_animation_deadline();
         self.event_queue
             .dispatch_pending(&mut self.state)
             .context("dispatch pending COSMIC Window events")?;
@@ -313,6 +337,7 @@ impl WindowObserver {
         self.state
             .start_pending_invocation(&self.pending_invocations, &queue_handle);
         self.state.handle_reveal_deadline();
+        self.state.handle_animation_deadline();
         self.state.handle_capture_deadline();
         Ok(())
     }
@@ -347,6 +372,12 @@ struct InteractionState {
     keyboard_focused: bool,
     shift_active: bool,
     visible: bool,
+}
+
+#[derive(Default)]
+struct RevealAnimation {
+    started_at: Option<Instant>,
+    next_frame_at: Option<Instant>,
 }
 
 struct ProtocolObserver {
@@ -399,6 +430,7 @@ struct ProtocolObserver {
     initial_hold_modifiers: Option<HoldModifiers>,
     reveal_at: Option<Instant>,
     readiness_deadline: Option<Instant>,
+    reveal_animation: RevealAnimation,
 }
 
 impl ProtocolObserver {
@@ -570,11 +602,15 @@ impl ProtocolObserver {
     }
 
     fn poll_timeout(&self) -> Option<Duration> {
-        let overlay_timeout = [self.reveal_at, self.readiness_deadline]
-            .into_iter()
-            .flatten()
-            .min()
-            .map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        let overlay_timeout = [
+            self.reveal_at,
+            self.readiness_deadline,
+            self.reveal_animation.next_frame_at,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .map(|deadline| deadline.saturating_duration_since(Instant::now()));
         let capture_timeout = self
             .capture_model
             .next_request_at()
@@ -589,6 +625,30 @@ impl ProtocolObserver {
         let effects = self.capture_model.refresh_due(self.capture_clock.elapsed());
         if let Err(error) = self.apply_capture_effects(effects) {
             self.fail_overlay("request refreshed Live Thumbnail failed", &error);
+        }
+    }
+
+    fn handle_animation_deadline(&mut self) {
+        let now = Instant::now();
+        if self
+            .reveal_animation
+            .next_frame_at
+            .is_none_or(|deadline| now < deadline)
+        {
+            return;
+        }
+        if let Err(error) = self.render_grid() {
+            self.fail_overlay("render Switcher Grid reveal animation failed", &error);
+            return;
+        }
+        if self
+            .reveal_animation
+            .started_at
+            .is_some_and(|started| now.duration_since(started) >= REVEAL_ANIMATION_DURATION)
+        {
+            self.reveal_animation = RevealAnimation::default();
+        } else {
+            self.reveal_animation.next_frame_at = Some(now + ANIMATION_FRAME_INTERVAL);
         }
     }
 
@@ -763,6 +823,7 @@ impl ProtocolObserver {
         self.initial_hold_modifiers = None;
         self.reveal_at = None;
         self.readiness_deadline = None;
+        self.reveal_animation = RevealAnimation::default();
     }
 
     fn observed_window(&self, id: &WindowId) -> Option<&ObservedWindow> {
@@ -1113,6 +1174,14 @@ impl ProtocolObserver {
             .preferred_scale
             .filter(|_| self.viewport.is_some())
             .unwrap_or(output_scale);
+        let presentation =
+            self.reveal_animation
+                .started_at
+                .map_or(self.preferences.presentation, |started| {
+                    self.preferences
+                        .presentation
+                        .for_reveal_elapsed(Instant::now().duration_since(started))
+                });
         let rendered = self.overlay_renderer.render(
             self.grid
                 .as_mut()
@@ -1121,7 +1190,7 @@ impl ProtocolObserver {
             surface_height,
             self.preferences.session.card_size(),
             scale,
-            self.preferences.presentation,
+            presentation,
         )?;
         self.install_rendered_grid(rendered)
     }
@@ -1178,8 +1247,13 @@ impl ProtocolObserver {
     }
 
     fn show_grid(&mut self) -> Result<()> {
-        self.attach_grid_buffer()?;
         self.interaction.visible = true;
+        if self.preferences.presentation.animations_enabled() {
+            let now = Instant::now();
+            self.reveal_animation.started_at = Some(now);
+            self.reveal_animation.next_frame_at = Some(now + ANIMATION_FRAME_INTERVAL);
+        }
+        self.render_grid()?;
         self.accessibility
             .update(self.grid.as_ref().context("the Switcher Grid is absent")?);
         Ok(())

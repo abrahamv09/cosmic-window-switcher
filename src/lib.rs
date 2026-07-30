@@ -11,7 +11,9 @@ mod capture;
 mod localization;
 mod preferences;
 
-pub use accessibility::{AccessibilityPolicy, AccessibleSwitcherItem, OverlayPresentation};
+pub use accessibility::{
+    AccessibilityPolicy, AccessibleSwitcherItem, OverlayPresentation, REVEAL_ANIMATION_DURATION,
+};
 pub use capture::{
     BufferTransform, CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage,
     InvalidThumbnailFrame, RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout,
@@ -1224,6 +1226,134 @@ pub struct ServiceDiagnostics {
     pub mru_order: Vec<WindowId>,
     pub window_scope: WindowScope,
     pub workspace_eligibility: WorkspaceEligibilityState,
+}
+
+impl ServiceDiagnostics {
+    #[must_use]
+    pub fn localized(&self, locale: Locale) -> String {
+        let mru_history = match self.mru_history {
+            MruHistoryAccuracy::WarmUp => StringKey::WarmUp,
+            MruHistoryAccuracy::Accurate => StringKey::Accurate,
+        };
+        let window_scope = match self.window_scope {
+            WindowScope::AllWorkspaces => StringKey::AllWorkspaces,
+            WindowScope::VisibleWorkspaces => StringKey::VisibleWorkspaces,
+        };
+        let workspace_filtering = match self.window_scope {
+            WindowScope::AllWorkspaces => StringKey::NotRequired,
+            WindowScope::VisibleWorkspaces => StringKey::Required,
+        };
+        let mut lines = vec![
+            localized_status(locale, StringKey::Service, StringKey::Running),
+            localized_status(locale, StringKey::MruHistory, mru_history),
+            format!(
+                "{}: {}",
+                locale.text(StringKey::WindowCount),
+                self.mru_order.len()
+            ),
+            localized_status(locale, StringKey::WindowScope, window_scope),
+            localized_status(locale, StringKey::WorkspaceFiltering, workspace_filtering),
+        ];
+        lines.extend(localized_workspace_eligibility(
+            locale,
+            self.workspace_eligibility,
+        ));
+        if !self.mru_order.is_empty() {
+            lines.push(format!("{}:", locale.text(StringKey::MruOrder)));
+            lines.extend(
+                self.mru_order
+                    .iter()
+                    .enumerate()
+                    .map(|(position, id)| format!("  {}. {id}", position + 1)),
+            );
+        }
+        lines.join("\n")
+    }
+}
+
+fn localized_status(locale: Locale, label: StringKey, value: StringKey) -> String {
+    format!("{}: {}", locale.text(label), locale.text(value))
+}
+
+fn localized_workspace_eligibility(
+    locale: Locale,
+    eligibility: WorkspaceEligibilityState,
+) -> Vec<String> {
+    let value = match eligibility {
+        WorkspaceEligibilityState::AwaitingSnapshot => StringKey::AwaitingSnapshot,
+        WorkspaceEligibilityState::Ready => StringKey::Ready,
+        WorkspaceEligibilityState::MissingToplevelInfo { .. }
+        | WorkspaceEligibilityState::MissingWorkspaceProtocol { .. }
+        | WorkspaceEligibilityState::MissingWorkspaceSnapshot { .. }
+        | WorkspaceEligibilityState::MissingToplevelMembership { .. } => StringKey::Unavailable,
+    };
+    let mut lines = vec![localized_status(
+        locale,
+        StringKey::WorkspaceEligibility,
+        value,
+    )];
+    let failure = match eligibility {
+        WorkspaceEligibilityState::AwaitingSnapshot | WorkspaceEligibilityState::Ready => None,
+        WorkspaceEligibilityState::MissingToplevelInfo {
+            advertised_version,
+            required_version,
+        } => Some(localized_failure(
+            locale,
+            StringKey::ToplevelInfoFailure,
+            localized_advertised_version(locale, advertised_version),
+            required_version,
+        )),
+        WorkspaceEligibilityState::MissingWorkspaceProtocol {
+            advertised_version,
+            required_version,
+        } => Some(localized_failure(
+            locale,
+            StringKey::WorkspaceProtocolFailure,
+            localized_advertised_version(locale, advertised_version),
+            required_version,
+        )),
+        WorkspaceEligibilityState::MissingWorkspaceSnapshot { advertised_version } => {
+            Some(localized_failure(
+                locale,
+                StringKey::WorkspaceSnapshotFailure,
+                advertised_version.to_string(),
+                advertised_version,
+            ))
+        }
+        WorkspaceEligibilityState::MissingToplevelMembership { advertised_version } => {
+            Some(localized_failure(
+                locale,
+                StringKey::ToplevelMembershipFailure,
+                advertised_version.to_string(),
+                advertised_version,
+            ))
+        }
+    };
+    lines.extend(failure);
+    lines
+}
+
+fn localized_advertised_version(locale: Locale, version: Option<u32>) -> String {
+    version.map_or_else(
+        || locale.text(StringKey::NotAdvertised),
+        |version| format!("v{version}"),
+    )
+}
+
+fn localized_failure(
+    locale: Locale,
+    message: StringKey,
+    advertised: String,
+    required: u32,
+) -> String {
+    let mut arguments = fluent_bundle::FluentArgs::new();
+    arguments.set("advertised", advertised);
+    arguments.set("required", required);
+    format!(
+        "{}: {}",
+        locale.text(StringKey::WorkspaceEligibilityFailure),
+        locale.format(message, Some(&arguments))
+    )
 }
 
 impl fmt::Display for ServiceDiagnostics {

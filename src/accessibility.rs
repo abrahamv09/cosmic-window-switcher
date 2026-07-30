@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use crate::{Dimming, Locale, SessionPreferences, StringKey};
+use std::time::Duration;
+
+pub const REVEAL_ANIMATION_DURATION: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessibilityPolicy {
@@ -44,6 +47,7 @@ pub struct OverlayPresentation {
     dimming: Dimming,
     animations_enabled: bool,
     high_contrast: bool,
+    reveal_opacity: u8,
 }
 
 impl OverlayPresentation {
@@ -56,6 +60,7 @@ impl OverlayPresentation {
             dimming: preferences.dimming(),
             animations_enabled: preferences.animations_enabled() && !accessibility.reduced_motion(),
             high_contrast: accessibility.high_contrast(),
+            reveal_opacity: u8::MAX,
         }
     }
 
@@ -73,6 +78,27 @@ impl OverlayPresentation {
     pub const fn high_contrast(self) -> bool {
         self.high_contrast
     }
+
+    #[must_use]
+    pub fn reveal_opacity(self, elapsed: Duration) -> u8 {
+        if !self.animations_enabled || elapsed >= REVEAL_ANIMATION_DURATION {
+            return u8::MAX;
+        }
+        let elapsed = elapsed.as_millis();
+        let duration = REVEAL_ANIMATION_DURATION.as_millis();
+        u8::try_from(elapsed.saturating_mul(u128::from(u8::MAX)) / duration).unwrap_or(u8::MAX)
+    }
+
+    #[must_use]
+    pub fn for_reveal_elapsed(mut self, elapsed: Duration) -> Self {
+        self.reveal_opacity = self.reveal_opacity(elapsed);
+        self
+    }
+
+    #[must_use]
+    pub const fn rendered_opacity(self) -> u8 {
+        self.reveal_opacity
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,12 +107,12 @@ pub struct AccessibleSwitcherItem<'a> {
     selected: bool,
     position: usize,
     set_size: usize,
-    instructions: &'static str,
+    instructions: String,
 }
 
 impl<'a> AccessibleSwitcherItem<'a> {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         name: &'a str,
         selected: bool,
         position: usize,
@@ -123,7 +149,7 @@ impl<'a> AccessibleSwitcherItem<'a> {
     }
 
     #[must_use]
-    pub const fn instructions(&self) -> &'static str {
-        self.instructions
+    pub fn instructions(&self) -> &str {
+        &self.instructions
     }
 }

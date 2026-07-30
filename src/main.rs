@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use cosmic_window_switcher::InvocationDirection;
+use cosmic_window_switcher::{InvocationDirection, Locale};
 
 mod cosmic_session;
 mod probe;
@@ -79,7 +79,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Service => service::run(),
         Command::Status => {
-            println!("{}", service::status()?);
+            println!("{}", service::status()?.localized(Locale::detect()));
             Ok(())
         }
         Command::Settings => settings::run(),
