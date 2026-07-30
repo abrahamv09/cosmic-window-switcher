@@ -149,3 +149,60 @@ fn repeated_invocations_move_in_their_requested_direction() {
         vec![ServiceEffect::SelectionChanged(window("previous"))]
     );
 }
+
+#[test]
+fn latch_mode_stays_open_until_enter_activates() {
+    let mut service = service_with_mru_order(&["focused", "previous"]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::empty(),
+    });
+    service.handle(ServiceEvent::SessionReady);
+    service.handle(ServiceEvent::RevealDelayElapsed);
+
+    assert_eq!(
+        service.handle(ServiceEvent::HoldModifiersChanged(HoldModifiers::empty())),
+        Vec::<ServiceEffect>::new()
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::Switching(
+            cosmic_window_switcher::SwitchingEvent::Enter
+        )),
+        vec![ServiceEffect::Activate(window("previous"))]
+    );
+}
+
+#[test]
+fn escape_cancels_without_requesting_a_focus_change() {
+    let mut service = service_with_mru_order(&["focused", "previous"]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::ALT,
+    });
+    service.handle(ServiceEvent::SessionReady);
+    service.handle(ServiceEvent::RevealDelayElapsed);
+
+    assert_eq!(
+        service.handle(ServiceEvent::Switching(
+            cosmic_window_switcher::SwitchingEvent::Escape
+        )),
+        vec![ServiceEffect::Cancel]
+    );
+}
+
+#[test]
+fn windows_discovered_during_switching_wait_for_the_next_session() {
+    let mut service = service_with_mru_order(&["focused", "previous", "least-recent"]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::ALT,
+    });
+
+    service.observe(WindowEvent::Discovered(window("new")));
+    service.observe(WindowEvent::Activated(window("new")));
+
+    assert_eq!(
+        service.handle(ServiceEvent::Invocation(InvocationDirection::Next)),
+        vec![ServiceEffect::SelectionChanged(window("least-recent"))]
+    );
+}

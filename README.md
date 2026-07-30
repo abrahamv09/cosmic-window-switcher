@@ -5,8 +5,10 @@ The executable includes a resident Switcher Service plus integration probes for
 Window switching and workspace-move capability verification. The service
 observes Window focus metadata throughout a COSMIC Session and keeps the current
 MRU Order without opening a visible Window or starting thumbnail capture. Its
-invisible quick-switch path captures the initial hold modifiers, selects in the
-requested MRU direction, and activates on release without flashing an overlay.
+quick-switch path captures the initial hold modifiers, selects in the requested
+MRU direction, and activates on release without flashing an overlay. Longer
+holds reveal a native icon-and-title Switcher Grid on the display containing the
+initially focused Window.
 
 The stable application identity is
 `io.github.abrahamv09.CosmicWindowSwitcher`. The project is licensed under
@@ -94,10 +96,17 @@ modifier activates the selection. An invocation without a hold modifier uses
 Latch Mode, where Enter activates and Escape cancels. A single Eligible Window
 is a no-op.
 
-This ticket implements the invisible quick-switch slice. If the reveal delay
-expires before a visible Switcher Grid is ready, the resident service delegates
-that invocation to the stock switcher instead of leaving an invisible session
-open.
+If the reveal delay expires, the service reveals a centered card grid in stable
+MRU Order. Each card has an application-identity icon fallback, its Window
+title, and a high-contrast selected state. `Tab` moves forward,
+`Shift+Tab` moves backward, and both directions wrap. The grid remains above
+fullscreen content without changing the selected Window's fullscreen state.
+Closed Windows disappear without reordering survivors, while Windows opened
+during switching wait for the next Switching Session.
+
+If the grid cannot be rendered or targeted to the Session Display before
+Session Readiness times out, the resident service delegates that invocation to
+the stock switcher instead of leaving an invisible session open.
 
 Each command uses a bounded D-Bus call and makes one bounded activation/recovery
 attempt. If the service remains unavailable or Session Readiness fails, it

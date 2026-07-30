@@ -27,6 +27,7 @@ anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 cosmic-client-toolkit = "0.2.0"
 cosmic-protocols = { version = "0.2.0", default-features = false, features = ["client"] }
+cosmic-text = "0.19.0"
 rustix = { version = "1.1.4", features = ["event"] }
 serde = { version = "1.0.229", features = ["derive"] }
 smithay-client-toolkit = "0.20.0"

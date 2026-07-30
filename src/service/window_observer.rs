@@ -42,10 +42,14 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
 
 use cosmic_window_switcher::{
     APPLICATION_ID, HoldModifiers, InvocationDirection, InvocationRequest, ServiceEffect,
-    ServiceEvent, SwitchingEvent, WindowEvent, WindowId,
+    ServiceEvent, SessionDisplay, SwitcherCard, SwitcherGrid, SwitchingEvent, WindowEvent,
+    WindowId,
 };
 
-use super::{PendingInvocations, SharedService, invocation};
+use super::{
+    PendingInvocations, SharedService, invocation,
+    overlay::{OverlayRenderer, RenderedOverlay},
+};
 
 const REVEAL_DELAY: Duration = Duration::from_millis(100);
 const SESSION_READINESS_TIMEOUT: Duration = Duration::from_millis(500);
@@ -90,6 +94,7 @@ impl WindowObserver {
         let toplevel_manager = ToplevelManagerState::try_new(&registry_state, &queue_handle)
             .context("the compositor does not expose COSMIC Window management")?;
         let state = ProtocolObserver {
+            queue_handle: queue_handle.clone(),
             registry_state,
             compositor,
             layer_shell,
@@ -104,13 +109,21 @@ impl WindowObserver {
             next_observation_key: 0,
             service,
             management_can_activate: false,
+            overlay_renderer: OverlayRenderer::new(),
             layer: None,
             overlay_pool: None,
+            overlay_buffer: None,
+            visible_pool: None,
+            visible_buffer: None,
+            visible_dimensions: None,
+            grid: None,
+            session_window_order: Vec::new(),
+            session_output: None,
+            interaction: InteractionState::default(),
             keyboard: None,
             seat: None,
             pending_direction: None,
             initial_hold_modifiers: None,
-            keyboard_focused: false,
             reveal_at: None,
             readiness_deadline: None,
         };
@@ -193,9 +206,20 @@ struct ObservedWindow {
     key: ObservationKey,
     foreign_toplevel: ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
     cosmic_toplevel: zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
+    title: String,
+    application_id: String,
+    outputs: Vec<wl_output::WlOutput>,
+}
+
+#[derive(Default)]
+struct InteractionState {
+    keyboard_focused: bool,
+    shift_active: bool,
+    visible: bool,
 }
 
 struct ProtocolObserver {
+    queue_handle: QueueHandle<Self>,
     registry_state: RegistryState,
     compositor: CompositorState,
     layer_shell: LayerShell,
@@ -210,20 +234,35 @@ struct ProtocolObserver {
     next_observation_key: u64,
     service: SharedService,
     management_can_activate: bool,
+    overlay_renderer: OverlayRenderer,
     layer: Option<LayerSurface>,
     overlay_pool: Option<RawPool>,
+    overlay_buffer: Option<wl_buffer::WlBuffer>,
+    visible_pool: Option<RawPool>,
+    visible_buffer: Option<wl_buffer::WlBuffer>,
+    visible_dimensions: Option<(u32, u32, i32)>,
+    grid: Option<SwitcherGrid>,
+    session_window_order: Vec<WindowId>,
+    session_output: Option<wl_output::WlOutput>,
+    interaction: InteractionState,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     seat: Option<wl_seat::WlSeat>,
     pending_direction: Option<InvocationDirection>,
     initial_hold_modifiers: Option<HoldModifiers>,
-    keyboard_focused: bool,
     reveal_at: Option<Instant>,
     readiness_deadline: Option<Instant>,
 }
 
 impl ProtocolObserver {
     fn apply(&mut self, event: Observation) {
+        let closed = match &event {
+            Observation::Closed(key) => self.observations.window_id(*key).cloned(),
+            _ => None,
+        };
         let window_events = self.observations.apply(event);
+        let grid_changed = closed
+            .as_ref()
+            .is_some_and(|closed| self.grid.as_mut().is_some_and(|grid| grid.remove(closed)));
         let mut service = self
             .service
             .write()
@@ -236,6 +275,16 @@ impl ProtocolObserver {
                 .service
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+        drop(service);
+        if grid_changed
+            && self.grid.is_some()
+            && let Err(error) = self.render_grid()
+        {
+            eprintln!("render Switcher Grid after Window closure failed: {error:#}");
+            if let Some(direction) = self.pending_direction {
+                self.fallback(direction);
+            }
         }
     }
 
@@ -258,20 +307,28 @@ impl ProtocolObserver {
             return;
         }
 
-        let window_count = self
+        let mru_order = self
             .service
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .diagnostics()
-            .mru_order
-            .len();
-        if window_count < 2 {
+            .mru_order;
+        if mru_order.len() < 2 {
             return;
         }
         if !self.management_can_activate || self.seat.is_none() {
             self.fallback(direction);
             return;
         }
+        let Some(session_output) = mru_order
+            .first()
+            .and_then(|focused| self.observed_window(focused))
+            .and_then(|window| window.outputs.first())
+            .cloned()
+        else {
+            self.fallback(direction);
+            return;
+        };
 
         let surface = self.compositor.create_surface(queue_handle);
         let layer = self.layer_shell.create_layer_surface(
@@ -279,15 +336,18 @@ impl ProtocolObserver {
             surface,
             Layer::Overlay,
             Some(APPLICATION_ID),
-            None,
+            Some(&session_output),
         );
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.set_size(1, 1);
         layer.commit();
         self.layer = Some(layer);
+        self.session_window_order = mru_order;
+        self.session_output = Some(session_output);
+        self.grid = None;
+        self.interaction = InteractionState::default();
         self.pending_direction = Some(direction);
         self.initial_hold_modifiers = None;
-        self.keyboard_focused = false;
         let now = Instant::now();
         self.reveal_at = Some(now + REVEAL_DELAY);
         self.readiness_deadline = Some(now + SESSION_READINESS_TIMEOUT);
@@ -302,8 +362,9 @@ impl ProtocolObserver {
     }
 
     fn try_mark_ready(&mut self) {
-        if !self.keyboard_focused
-            || self.overlay_pool.is_none()
+        if !self.interaction.keyboard_focused
+            || self.visible_pool.is_none()
+            || self.visible_buffer.is_none()
             || self.initial_hold_modifiers.is_none()
         {
             return;
@@ -357,9 +418,10 @@ impl ProtocolObserver {
             SwitchingEvent::HoldModifiersChanged(modifiers) => {
                 ServiceEvent::HoldModifiersChanged(modifiers)
             }
-            SwitchingEvent::Tab | SwitchingEvent::Enter | SwitchingEvent::Escape => {
-                ServiceEvent::Switching(event)
-            }
+            SwitchingEvent::Tab
+            | SwitchingEvent::Navigate(_)
+            | SwitchingEvent::Enter
+            | SwitchingEvent::Escape => ServiceEvent::Switching(event),
         };
         let effects = self
             .service
@@ -372,15 +434,32 @@ impl ProtocolObserver {
     fn apply_effects(&mut self, effects: Vec<ServiceEffect>) {
         for effect in effects {
             match effect {
-                ServiceEffect::PrepareInvisibleOverlay { .. }
-                | ServiceEffect::SelectionChanged(_) => {}
-                ServiceEffect::RevealOverlay { .. } => {
-                    let fallback = self
-                        .service
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .handle(ServiceEvent::SessionReadinessFailed);
-                    self.apply_effects(fallback);
+                ServiceEffect::PrepareInvisibleOverlay { selected } => {
+                    if let Err(error) = self.prepare_grid(&selected) {
+                        eprintln!("prepare Switcher Grid failed: {error:#}");
+                        if let Some(direction) = self.pending_direction {
+                            self.fallback(direction);
+                        }
+                    }
+                }
+                ServiceEffect::SelectionChanged(selected) => {
+                    if let Err(error) = self.select_grid(&selected) {
+                        eprintln!("render Switcher Grid selection failed: {error:#}");
+                        if let Some(direction) = self.pending_direction {
+                            self.fallback(direction);
+                        }
+                    }
+                }
+                ServiceEffect::RevealOverlay { selected } => {
+                    if let Some(grid) = self.grid.as_mut() {
+                        let _selection = grid.select(&selected);
+                    }
+                    if let Err(error) = self.show_grid() {
+                        eprintln!("reveal Switcher Grid failed: {error:#}");
+                        if let Some(direction) = self.pending_direction {
+                            self.fallback(direction);
+                        }
+                    }
                 }
                 ServiceEffect::Activate(window) => {
                     let target = self
@@ -413,12 +492,178 @@ impl ProtocolObserver {
             layer.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer.commit();
         }
+        if let Some(buffer) = self.visible_buffer.take() {
+            buffer.destroy();
+        }
+        if let Some(buffer) = self.overlay_buffer.take() {
+            buffer.destroy();
+        }
         self.overlay_pool = None;
+        self.visible_pool = None;
+        self.visible_dimensions = None;
+        self.grid = None;
+        self.session_window_order.clear();
+        self.session_output = None;
+        self.interaction = InteractionState::default();
         self.pending_direction = None;
         self.initial_hold_modifiers = None;
-        self.keyboard_focused = false;
         self.reveal_at = None;
         self.readiness_deadline = None;
+    }
+
+    fn observed_window(&self, id: &WindowId) -> Option<&ObservedWindow> {
+        self.windows
+            .iter()
+            .find(|window| self.observations.window_id(window.key) == Some(id))
+    }
+
+    fn prepare_grid(&mut self, selected: &WindowId) -> Result<()> {
+        let output = self
+            .session_output
+            .as_ref()
+            .context("the Switching Session has no Session Display")?;
+        let output_info = self
+            .output_state
+            .info(output)
+            .context("the Session Display has no output information")?;
+        let session_display = SessionDisplay::from(
+            output_info
+                .name
+                .unwrap_or_else(|| format!("output-{}", output_info.id)),
+        );
+        let cards = self
+            .session_window_order
+            .iter()
+            .map(|id| {
+                self.observed_window(id).map(|window| {
+                    SwitcherCard::new(
+                        id.clone(),
+                        window.application_id.clone(),
+                        window.title.clone(),
+                    )
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .context("a Session Window is missing icon-and-title metadata")?;
+        self.grid = Some(
+            SwitcherGrid::new(session_display, cards, selected)
+                .context("the Initial Selection is absent from the Switcher Grid")?,
+        );
+        self.render_grid()
+    }
+
+    fn select_grid(&mut self, selected: &WindowId) -> Result<()> {
+        self.grid
+            .as_mut()
+            .context("the Switching Session has no Switcher Grid")?
+            .select(selected)
+            .context("the selected Window is absent from the Switcher Grid")?;
+        self.render_grid()
+    }
+
+    fn render_grid(&mut self) -> Result<()> {
+        let output = self
+            .session_output
+            .as_ref()
+            .context("the Switching Session has no Session Display")?;
+        let output_info = self
+            .output_state
+            .info(output)
+            .context("the Session Display has no output information")?;
+        let maximum_width = output_info
+            .logical_size
+            .and_then(|(width, _)| u32::try_from(width).ok())
+            .map_or(1_200, |width| width.saturating_mul(4) / 5);
+        let rendered = self.overlay_renderer.render(
+            self.grid
+                .as_ref()
+                .context("the Switching Session has no Switcher Grid")?,
+            maximum_width,
+            output_info.scale_factor,
+        )?;
+        self.install_rendered_grid(rendered)
+    }
+
+    fn install_rendered_grid(&mut self, rendered: RenderedOverlay) -> Result<()> {
+        let RenderedOverlay {
+            logical_width,
+            logical_height,
+            scale,
+            pixels,
+        } = rendered;
+        let mut pool = RawPool::new(pixels.len(), &self.shm)
+            .context("allocate shared memory for the Switcher Grid")?;
+        pool.mmap().copy_from_slice(&pixels);
+        let scale_u32 = u32::try_from(scale).context("invalid output scale")?;
+        let physical_width = logical_width
+            .checked_mul(scale_u32)
+            .context("Switcher Grid width overflow")?;
+        let physical_height = logical_height
+            .checked_mul(scale_u32)
+            .context("Switcher Grid height overflow")?;
+        let stride = physical_width
+            .checked_mul(4)
+            .context("Switcher Grid stride overflow")?;
+        let buffer = pool.create_buffer(
+            0,
+            i32::try_from(physical_width).context("Switcher Grid is too wide")?,
+            i32::try_from(physical_height).context("Switcher Grid is too tall")?,
+            i32::try_from(stride).context("Switcher Grid stride is too large")?,
+            wl_shm::Format::Argb8888,
+            (),
+            &self.queue_handle,
+        );
+        if let Some(previous) = self.visible_buffer.replace(buffer) {
+            previous.destroy();
+        }
+        self.visible_pool = Some(pool);
+        self.visible_dimensions = Some((logical_width, logical_height, scale));
+        if self.interaction.visible {
+            self.attach_visible_buffer()?;
+        }
+        self.try_mark_ready();
+        Ok(())
+    }
+
+    fn show_grid(&mut self) -> Result<()> {
+        self.interaction.visible = true;
+        self.attach_visible_buffer()
+    }
+
+    fn attach_visible_buffer(&self) -> Result<()> {
+        let layer = self
+            .layer
+            .as_ref()
+            .context("the Switching Session has no layer surface")?;
+        let buffer = self
+            .visible_buffer
+            .as_ref()
+            .context("the Switcher Grid has no rendered buffer")?;
+        let (logical_width, logical_height, scale) = self
+            .visible_dimensions
+            .context("the Switcher Grid has no rendered dimensions")?;
+        let scale_u32 = u32::try_from(scale).context("invalid output scale")?;
+        layer.set_size(logical_width, logical_height);
+        layer.wl_surface().set_buffer_scale(scale);
+        layer.wl_surface().attach(Some(buffer), 0, 0);
+        layer.wl_surface().damage_buffer(
+            0,
+            0,
+            i32::try_from(
+                logical_width
+                    .checked_mul(scale_u32)
+                    .context("Switcher Grid width overflow")?,
+            )
+            .context("Switcher Grid is too wide")?,
+            i32::try_from(
+                logical_height
+                    .checked_mul(scale_u32)
+                    .context("Switcher Grid height overflow")?,
+            )
+            .context("Switcher Grid is too tall")?,
+        );
+        layer.commit();
+        Ok(())
     }
 }
 
@@ -533,6 +778,7 @@ impl LayerShellHandler for ProtocolObserver {
                 layer.wl_surface().attach(Some(&buffer), 0, 0);
                 layer.wl_surface().damage_buffer(0, 0, 1, 1);
                 layer.commit();
+                self.overlay_buffer = Some(buffer);
                 self.overlay_pool = Some(pool);
                 self.try_mark_ready();
             }
@@ -630,7 +876,7 @@ impl KeyboardHandler for ProtocolObserver {
         };
         let modifiers = hold_modifiers_from_keysyms(keysyms);
         self.initial_hold_modifiers = Some(modifiers);
-        self.keyboard_focused = true;
+        self.interaction.keyboard_focused = true;
         let effects = self
             .service
             .write()
@@ -662,6 +908,11 @@ impl KeyboardHandler for ProtocolObserver {
         event: KeyEvent,
     ) {
         match event.keysym {
+            Keysym::Tab if self.interaction.shift_active => {
+                self.handle_switching_event(SwitchingEvent::Navigate(
+                    InvocationDirection::Previous,
+                ));
+            }
             Keysym::Tab => self.handle_switching_event(SwitchingEvent::Tab),
             Keysym::Return | Keysym::KP_Enter => {
                 self.handle_switching_event(SwitchingEvent::Enter);
@@ -680,7 +931,12 @@ impl KeyboardHandler for ProtocolObserver {
         event: KeyEvent,
     ) {
         if event.keysym == Keysym::Tab {
-            self.handle_switching_event(SwitchingEvent::Tab);
+            let direction = if self.interaction.shift_active {
+                InvocationDirection::Previous
+            } else {
+                InvocationDirection::Next
+            };
+            self.handle_switching_event(SwitchingEvent::Navigate(direction));
         }
     }
 
@@ -704,6 +960,7 @@ impl KeyboardHandler for ProtocolObserver {
         _raw_modifiers: RawModifiers,
         _layout: u32,
     ) {
+        self.interaction.shift_active = modifiers.shift;
         self.handle_switching_event(SwitchingEvent::HoldModifiersChanged(
             hold_modifiers_from_state(modifiers),
         ));
@@ -882,6 +1139,9 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, GlobalData
                     key,
                     foreign_toplevel: toplevel,
                     cosmic_toplevel,
+                    title: String::new(),
+                    application_id: String::new(),
+                    outputs: Vec::new(),
                 });
                 state.apply(Observation::Discovered(key));
             }
@@ -913,6 +1173,24 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
             return;
         };
         match event {
+            ext_foreign_toplevel_handle_v1::Event::Title { title } => {
+                if let Some(window) = state
+                    .windows
+                    .iter_mut()
+                    .find(|candidate| candidate.key == window.key)
+                {
+                    window.title = title;
+                }
+            }
+            ext_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
+                if let Some(window) = state
+                    .windows
+                    .iter_mut()
+                    .find(|candidate| candidate.key == window.key)
+                {
+                    window.application_id = app_id;
+                }
+            }
             ext_foreign_toplevel_handle_v1::Event::Identifier { identifier } => {
                 state.apply(Observation::Identified {
                     key: window.key,
@@ -957,9 +1235,6 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, GlobalData>
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
     ) {
-        let zcosmic_toplevel_handle_v1::Event::State { state: states } = event else {
-            return;
-        };
         let Some(key) = state
             .windows
             .iter()
@@ -968,10 +1243,27 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, GlobalData>
         else {
             return;
         };
-        state.apply(Observation::ActivationChanged {
-            key,
-            activated: toplevel_is_activated(&states),
-        });
+        match event {
+            zcosmic_toplevel_handle_v1::Event::OutputEnter { output } => {
+                if let Some(window) = state.windows.iter_mut().find(|window| window.key == key)
+                    && !window.outputs.contains(&output)
+                {
+                    window.outputs.push(output);
+                }
+            }
+            zcosmic_toplevel_handle_v1::Event::OutputLeave { output } => {
+                if let Some(window) = state.windows.iter_mut().find(|window| window.key == key) {
+                    window.outputs.retain(|candidate| *candidate != output);
+                }
+            }
+            zcosmic_toplevel_handle_v1::Event::State { state: states } => {
+                state.apply(Observation::ActivationChanged {
+                    key,
+                    activated: toplevel_is_activated(&states),
+                });
+            }
+            _ => {}
+        }
     }
 }
 

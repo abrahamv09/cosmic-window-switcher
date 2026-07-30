@@ -99,6 +99,7 @@ pub enum ServiceEffect {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwitchingEvent {
     Tab,
+    Navigate(InvocationDirection),
     Enter,
     Escape,
     HoldModifiersChanged(HoldModifiers),
@@ -170,6 +171,11 @@ impl SwitchingSession {
         &self.windows[self.selected]
     }
 
+    #[must_use]
+    pub fn windows(&self) -> &[WindowId] {
+        &self.windows
+    }
+
     pub fn handle(&mut self, event: SwitchingEvent) -> SessionEffect {
         if self.state == SessionState::Finished {
             return SessionEffect::None;
@@ -177,6 +183,7 @@ impl SwitchingSession {
 
         match event {
             SwitchingEvent::Tab => self.move_selection(InvocationDirection::Next),
+            SwitchingEvent::Navigate(direction) => self.move_selection(direction),
             SwitchingEvent::Enter => {
                 self.state = SessionState::Finished;
                 SessionEffect::Activate(self.selected().clone())
@@ -235,6 +242,202 @@ impl SwitchingSession {
             return SessionEffect::SelectionChanged(self.selected().clone());
         }
         SessionEffect::None
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionDisplay(String);
+
+impl From<&str> for SessionDisplay {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for SessionDisplay {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl SessionDisplay {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SessionDisplay {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ApplicationIcon {
+    Monogram(char),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitcherCard {
+    window: WindowId,
+    application_id: String,
+    title: String,
+    application_icon: ApplicationIcon,
+    selected: bool,
+    position: usize,
+    set_size: usize,
+}
+
+impl SwitcherCard {
+    #[must_use]
+    pub fn new(window: WindowId, application_id: String, title: String) -> Self {
+        let title = if title.trim().is_empty() {
+            if application_id.trim().is_empty() {
+                "Untitled Window".to_owned()
+            } else {
+                application_id.clone()
+            }
+        } else {
+            title
+        };
+        let monogram = application_id
+            .rsplit(['.', '-'])
+            .find_map(|part| part.chars().find(char::is_ascii_alphanumeric))
+            .unwrap_or('?')
+            .to_ascii_uppercase();
+
+        Self {
+            window,
+            application_id,
+            title,
+            application_icon: ApplicationIcon::Monogram(monogram),
+            selected: false,
+            position: 0,
+            set_size: 0,
+        }
+    }
+
+    #[must_use]
+    pub fn window(&self) -> &WindowId {
+        &self.window
+    }
+
+    #[must_use]
+    pub fn application_id(&self) -> &str {
+        &self.application_id
+    }
+
+    #[must_use]
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    #[must_use]
+    pub const fn application_icon(&self) -> &ApplicationIcon {
+        &self.application_icon
+    }
+
+    #[must_use]
+    pub fn accessible_name(&self) -> &str {
+        &self.title
+    }
+
+    #[must_use]
+    pub const fn accessible_position(&self) -> (usize, usize) {
+        (self.position, self.set_size)
+    }
+
+    #[must_use]
+    pub const fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnknownGridSelection(WindowId);
+
+impl fmt::Display for UnknownGridSelection {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "Window {} does not belong to the Switcher Grid",
+            self.0
+        )
+    }
+}
+
+impl Error for UnknownGridSelection {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitcherGrid {
+    session_display: SessionDisplay,
+    cards: Vec<SwitcherCard>,
+}
+
+impl SwitcherGrid {
+    /// Builds the stable card order for one Switching Session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownGridSelection`] when `selected` is not represented by
+    /// one of the supplied cards.
+    pub fn new(
+        session_display: SessionDisplay,
+        cards: impl IntoIterator<Item = SwitcherCard>,
+        selected: &WindowId,
+    ) -> Result<Self, UnknownGridSelection> {
+        let mut cards = cards.into_iter().collect::<Vec<_>>();
+        update_accessible_positions(&mut cards);
+        let mut grid = Self {
+            session_display,
+            cards,
+        };
+        grid.select(selected)?;
+        Ok(grid)
+    }
+
+    #[must_use]
+    pub const fn session_display(&self) -> &SessionDisplay {
+        &self.session_display
+    }
+
+    #[must_use]
+    pub fn cards(&self) -> &[SwitcherCard] {
+        &self.cards
+    }
+
+    /// Changes the selected card without changing MRU Order.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UnknownGridSelection`] when `selected` is not represented in
+    /// this Switching Session.
+    pub fn select(&mut self, selected: &WindowId) -> Result<(), UnknownGridSelection> {
+        if !self.cards.iter().any(|card| card.window == *selected) {
+            return Err(UnknownGridSelection(selected.clone()));
+        }
+        for card in &mut self.cards {
+            card.selected = card.window == *selected;
+        }
+        Ok(())
+    }
+
+    pub fn remove(&mut self, window: &WindowId) -> bool {
+        let Some(index) = self.cards.iter().position(|card| card.window == *window) else {
+            return false;
+        };
+        self.cards.remove(index);
+        update_accessible_positions(&mut self.cards);
+        true
+    }
+}
+
+fn update_accessible_positions(cards: &mut [SwitcherCard]) {
+    let set_size = cards.len();
+    for (index, card) in cards.iter_mut().enumerate() {
+        card.position = index + 1;
+        card.set_size = set_size;
     }
 }
 

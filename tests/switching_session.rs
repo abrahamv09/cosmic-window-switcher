@@ -51,6 +51,37 @@ fn tab_cycles_through_the_session_window_set() {
 }
 
 #[test]
+fn reverse_navigation_wraps_without_reordering_the_session_window_set() {
+    let mut session = SwitchingSession::new(
+        [
+            WindowId::from("focused"),
+            WindowId::from("previous"),
+            WindowId::from("least-recent"),
+        ],
+        InvocationDirection::Next,
+        HoldModifiers::ALT,
+    )
+    .expect("three Windows can start a Switching Session");
+
+    assert_eq!(
+        session.handle(SwitchingEvent::Navigate(InvocationDirection::Previous)),
+        SessionEffect::SelectionChanged(WindowId::from("focused"))
+    );
+    assert_eq!(
+        session.handle(SwitchingEvent::Navigate(InvocationDirection::Previous)),
+        SessionEffect::SelectionChanged(WindowId::from("least-recent"))
+    );
+    assert_eq!(
+        session.windows(),
+        [
+            WindowId::from("focused"),
+            WindowId::from("previous"),
+            WindowId::from("least-recent"),
+        ]
+    );
+}
+
+#[test]
 fn escape_cancels_without_activating_a_window() {
     let mut session = two_window_session();
 
@@ -62,6 +93,17 @@ fn escape_cancels_without_activating_a_window() {
         session.handle(SwitchingEvent::HoldModifiersChanged(HoldModifiers::empty())),
         SessionEffect::None
     );
+}
+
+#[test]
+fn releasing_shift_while_an_initial_hold_modifier_remains_does_not_commit() {
+    let mut session = two_window_session();
+
+    assert_eq!(
+        session.handle(SwitchingEvent::HoldModifiersChanged(HoldModifiers::ALT)),
+        SessionEffect::None
+    );
+    assert_eq!(session.selected(), &WindowId::from("previous"));
 }
 
 #[test]

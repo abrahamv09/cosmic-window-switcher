@@ -15,6 +15,7 @@ use cosmic_window_switcher::{InvocationDirection, ServiceDiagnostics, SwitcherSe
 
 mod diagnostics;
 mod invocation;
+mod overlay;
 mod window_observer;
 
 type SharedService = Arc<RwLock<SwitcherService>>;
