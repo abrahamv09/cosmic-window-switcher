@@ -4,7 +4,12 @@
 
 **Blocked by:** 01 — Prove a two-Window COSMIC switch.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
+
+**Progress:** partially completed
+
+**Waiting on:** Upstream COSMIC compositor support for an advertised-and-honored
+`move_to_ext_workspace` capability and atomic Window workspace membership.
 
 - [x] Runtime probing records the advertised management protocol version and workspace-move capabilities on the packaged compositor.
 - [x] The client never issues a request whose matching capability is not advertised.
