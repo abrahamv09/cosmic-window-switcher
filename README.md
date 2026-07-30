@@ -118,6 +118,13 @@ The default Refresh Ceiling is 30 FPS, unchanged Windows do not produce
 duplicate frames, and a stream never has more than one request outstanding.
 Rows outside the Grid Viewport release their capture streams.
 
+The grid keeps the selected fixed-size card preset as Window counts grow and
+uses fractional-scale surface hints to render a correctly sized buffer without
+changing logical card geometry. Pointer entry after reveal is inert until the
+pointer moves; motion over a card selects it. A primary-button click activates
+only when press and release complete on the same card, while a completed click
+on the dimmed background cancels without activating a Window.
+
 Every card retains its installed application icon (or an
 application-identity monogram), Window title, and high-contrast selected state.
 A denied, stopped, failed, protected, or unsupported Window capture degrades
