@@ -49,10 +49,10 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage, HoldModifiers,
-    InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
-    SessionDisplay, ShmConstraints, ShmFormat, ShmFrameLayout, SwitcherGrid, SwitcherItem,
-    SwitchingEvent, ThumbnailFrame, WindowEvent, WindowId,
+    APPLICATION_ID, BufferTransform, CaptureEffect, CaptureFailure, CaptureSessionModel,
+    FrameDamage, HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling,
+    ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFormat, ShmFrameLayout,
+    SwitcherGrid, SwitcherItem, SwitchingEvent, ThumbnailFrame, WindowEvent, WindowId,
 };
 
 use super::{
@@ -645,9 +645,15 @@ impl ProtocolObserver {
     fn apply_capture_effects(&mut self, effects: Vec<CaptureEffect>) -> Result<()> {
         for effect in effects {
             match effect {
-                CaptureEffect::CreateStream(window) => self.create_capture_stream(&window)?,
+                CaptureEffect::CreateStream(window) => {
+                    if let Err(error) = self.create_capture_stream(&window) {
+                        self.degrade_capture_after_error(&window, &error)?;
+                    }
+                }
                 CaptureEffect::RequestFrame { window, layout } => {
-                    self.request_capture_frame(&window, layout)?;
+                    if let Err(error) = self.request_capture_frame(&window, layout) {
+                        self.degrade_capture_after_error(&window, &error)?;
+                    }
                 }
                 CaptureEffect::PresentThumbnail(_) => {}
                 CaptureEffect::DegradeThumbnail { window, reason } => {
@@ -664,6 +670,18 @@ impl ProtocolObserver {
             }
         }
         Ok(())
+    }
+
+    fn degrade_capture_after_error(
+        &mut self,
+        window: &WindowId,
+        error: &anyhow::Error,
+    ) -> Result<()> {
+        eprintln!("Live Thumbnail capture for Window {window} degraded: {error:#}");
+        let effects = self
+            .capture_model
+            .failed(window, CaptureFailure::FrameFailed);
+        self.apply_capture_effects(effects)
     }
 
     fn create_capture_stream(&mut self, window: &WindowId) -> Result<()> {
@@ -705,37 +723,49 @@ impl ProtocolObserver {
             .iter_mut()
             .find(|stream| stream.window == *window)
             .context("request a frame for an absent capture stream")?;
-        if let Some(previous) = stream.allocation.take() {
-            previous.release();
-        }
-        let mut pool = RawPool::new(layout.byte_len, &self.shm)
-            .context("allocate memory-only Live Thumbnail frame")?;
         let width = i32::try_from(layout.width).context("Live Thumbnail width is too large")?;
         let height = i32::try_from(layout.height).context("Live Thumbnail height is too large")?;
-        let stride = i32::try_from(layout.stride).context("Live Thumbnail stride is too large")?;
-        let buffer = pool.create_buffer(
-            0,
-            width,
-            height,
-            stride,
-            wl_shm_format(layout.format),
-            (),
-            &self.queue_handle,
-        );
-        let allocation = Arc::new(CaptureAllocation {
-            pool: Mutex::new(Some(pool)),
-            buffer,
-            layout,
-        });
-        let full_damage = [Rect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        }];
+        let (allocation, buffer_damage) = if let Some(allocation) = stream
+            .allocation
+            .as_ref()
+            .filter(|allocation| allocation.layout == layout)
+            .cloned()
+        {
+            (allocation, Vec::new())
+        } else {
+            if let Some(previous) = stream.allocation.take() {
+                previous.release();
+            }
+            let mut pool = RawPool::new(layout.byte_len, &self.shm)
+                .context("allocate memory-only Live Thumbnail frame")?;
+            let stride =
+                i32::try_from(layout.stride).context("Live Thumbnail stride is too large")?;
+            let buffer = pool.create_buffer(
+                0,
+                width,
+                height,
+                stride,
+                wl_shm_format(layout.format),
+                (),
+                &self.queue_handle,
+            );
+            (
+                Arc::new(CaptureAllocation {
+                    pool: Mutex::new(Some(pool)),
+                    buffer,
+                    layout,
+                }),
+                vec![Rect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                }],
+            )
+        };
         stream.session.capture(
             &allocation.buffer,
-            &full_damage,
+            &buffer_damage,
             &self.queue_handle,
             LiveCaptureFrameData {
                 data: ScreencopyFrameData::default(),
@@ -758,6 +788,25 @@ impl ProtocolObserver {
         let mut stream = self.capture_streams.remove(index);
         if let Some(allocation) = stream.allocation.take() {
             allocation.release();
+        }
+    }
+
+    fn finish_capture_allocation(
+        &mut self,
+        window: &WindowId,
+        allocation: &Arc<CaptureAllocation>,
+    ) {
+        allocation.release();
+        if let Some(stream) = self
+            .capture_streams
+            .iter_mut()
+            .find(|stream| stream.window == *window)
+            && stream
+                .allocation
+                .as_ref()
+                .is_some_and(|outstanding| Arc::ptr_eq(outstanding, allocation))
+        {
+            stream.allocation = None;
         }
     }
 
@@ -873,12 +922,11 @@ impl ProtocolObserver {
         }
         self.grid_pool = Some(pool);
         self.grid_dimensions = Some(dimensions);
-        let selected = self.grid.as_ref().and_then(|grid| {
-            grid.items()
-                .iter()
-                .find(|item| item.is_selected())
-                .map(|item| item.window().clone())
-        });
+        let selected = self
+            .grid
+            .as_ref()
+            .and_then(SwitcherGrid::selected_window)
+            .cloned();
         self.capture_model.set_selected(selected);
         if !self.capture_contract_available && !visible_windows.is_empty() {
             bail!("the COSMIC Session does not expose required shared-memory capture protocols");
@@ -1320,15 +1368,8 @@ impl ScreencopyHandler for ProtocolObserver {
         };
         let window = data.window.clone();
         let layout = data.allocation.layout;
+        let transform = buffer_transform(frame.transform);
         let pixels = data.allocation.pixels();
-        data.allocation.release();
-        if let Some(stream) = self
-            .capture_streams
-            .iter_mut()
-            .find(|stream| stream.window == window)
-        {
-            stream.allocation = None;
-        }
         let damage = frame
             .damage
             .iter()
@@ -1346,7 +1387,7 @@ impl ScreencopyHandler for ProtocolObserver {
         let Some(pixels) = pixels else {
             return;
         };
-        let Ok(thumbnail) = ThumbnailFrame::new(layout, pixels) else {
+        let Ok(thumbnail) = ThumbnailFrame::with_transform(layout, pixels, transform) else {
             let effects = self
                 .capture_model
                 .failed(&window, CaptureFailure::InvalidDimensions);
@@ -1373,14 +1414,7 @@ impl ScreencopyHandler for ProtocolObserver {
             return;
         };
         let window = data.window.clone();
-        data.allocation.release();
-        if let Some(stream) = self
-            .capture_streams
-            .iter_mut()
-            .find(|stream| stream.window == window)
-        {
-            stream.allocation = None;
-        }
+        self.finish_capture_allocation(&window, &data.allocation);
         let effects = self
             .capture_model
             .failed(&window, CaptureFailure::FrameFailed);
@@ -1700,6 +1734,19 @@ fn shm_format(format: wl_shm::Format) -> Option<ShmFormat> {
         wl_shm::Format::Xbgr8888 => Some(ShmFormat::Xbgr8888),
         wl_shm::Format::Xrgb8888 => Some(ShmFormat::Xrgb8888),
         _ => None,
+    }
+}
+
+const fn buffer_transform(transform: WEnum<wl_output::Transform>) -> BufferTransform {
+    match transform {
+        WEnum::Value(wl_output::Transform::_90) => BufferTransform::Rotate90,
+        WEnum::Value(wl_output::Transform::_180) => BufferTransform::Rotate180,
+        WEnum::Value(wl_output::Transform::_270) => BufferTransform::Rotate270,
+        WEnum::Value(wl_output::Transform::Flipped) => BufferTransform::Flipped,
+        WEnum::Value(wl_output::Transform::Flipped90) => BufferTransform::Flipped90,
+        WEnum::Value(wl_output::Transform::Flipped180) => BufferTransform::Flipped180,
+        WEnum::Value(wl_output::Transform::Flipped270) => BufferTransform::Flipped270,
+        WEnum::Unknown(_) | WEnum::Value(_) => BufferTransform::Normal,
     }
 }
 

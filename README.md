@@ -46,6 +46,19 @@ the process exits and never writes Window pixels to disk. A successful capture
 reports its exact compositor-provided dimensions, allocated byte count, and SHM
 format.
 
+For the ticket-5 Live Thumbnail contract, repeat capture only after compositor
+damage and cap the probe at three frames per Window:
+
+```sh
+cargo run --release -- probe --live-thumbnails
+```
+
+Leave one Window unchanged, change content in another, exercise minimization or
+a protected/unsupported Window where available, then press Escape. The report
+distinguishes damage-driven updates from a Window that emitted no duplicate
+frame and confirms that session-stop cleanup released every remaining capture
+session and SHM allocation.
+
 The transparent overlay requests exclusive keyboard focus:
 
 - Tab cycles the selected Window.

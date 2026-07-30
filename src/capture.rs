@@ -28,10 +28,24 @@ pub struct ShmFrameLayout {
     pub format: ShmFormat,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BufferTransform {
+    #[default]
+    Normal,
+    Rotate90,
+    Rotate180,
+    Rotate270,
+    Flipped,
+    Flipped90,
+    Flipped180,
+    Flipped270,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThumbnailFrame {
     layout: ShmFrameLayout,
     pixels: Vec<u8>,
+    transform: BufferTransform,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,13 +74,31 @@ impl ThumbnailFrame {
     /// Returns [`InvalidThumbnailFrame`] when the pixel allocation does not
     /// match the compositor-negotiated layout.
     pub fn new(layout: ShmFrameLayout, pixels: Vec<u8>) -> Result<Self, InvalidThumbnailFrame> {
+        Self::with_transform(layout, pixels, BufferTransform::Normal)
+    }
+
+    /// Takes ownership of one exact-size SHM frame with its compositor transform.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidThumbnailFrame`] when the pixel allocation does not
+    /// match the compositor-negotiated layout.
+    pub fn with_transform(
+        layout: ShmFrameLayout,
+        pixels: Vec<u8>,
+        transform: BufferTransform,
+    ) -> Result<Self, InvalidThumbnailFrame> {
         if pixels.len() != layout.byte_len {
             return Err(InvalidThumbnailFrame {
                 expected: layout.byte_len,
                 actual: pixels.len(),
             });
         }
-        Ok(Self { layout, pixels })
+        Ok(Self {
+            layout,
+            pixels,
+            transform,
+        })
     }
 
     #[must_use]
@@ -81,40 +113,46 @@ impl ThumbnailFrame {
 
     #[must_use]
     pub fn argb_pixel(&self, x: u32, y: u32) -> Option<u32> {
-        if x >= self.layout.width || y >= self.layout.height {
+        let (presentation_width, presentation_height) = self.presentation_size();
+        if x >= presentation_width || y >= presentation_height {
             return None;
         }
-        let offset = usize::try_from(y)
+        let (raw_x, raw_y) = self.raw_coordinates(x, y);
+        let offset = usize::try_from(raw_y)
             .ok()?
             .checked_mul(usize::try_from(self.layout.stride).ok()?)?
-            .checked_add(usize::try_from(x).ok()?.checked_mul(4)?)?;
+            .checked_add(usize::try_from(raw_x).ok()?.checked_mul(4)?)?;
         let packed = u32::from_ne_bytes(self.pixels.get(offset..offset + 4)?.try_into().ok()?);
-        let alpha = match self.layout.format {
-            ShmFormat::Argb8888 | ShmFormat::Abgr8888 => packed & 0xFF00_0000,
-            ShmFormat::Xrgb8888 | ShmFormat::Xbgr8888 => 0xFF00_0000,
-        };
         Some(match self.layout.format {
-            ShmFormat::Argb8888 | ShmFormat::Xrgb8888 => alpha | (packed & 0x00FF_FFFF),
-            ShmFormat::Abgr8888 | ShmFormat::Xbgr8888 => {
-                let red = packed & 0x0000_00FF;
-                let green = packed & 0x0000_FF00;
-                let blue = packed & 0x00FF_0000;
-                alpha | (red << 16) | green | (blue >> 16)
-            }
+            ShmFormat::Argb8888 => packed,
+            ShmFormat::Xrgb8888 => 0xFF00_0000 | (packed & 0x00FF_FFFF),
+            ShmFormat::Abgr8888 => swap_red_and_blue(packed),
+            ShmFormat::Xbgr8888 => 0xFF00_0000 | swap_red_and_blue(packed),
         })
     }
 
     #[must_use]
+    pub const fn presentation_size(&self) -> (u32, u32) {
+        match self.transform {
+            BufferTransform::Rotate90
+            | BufferTransform::Rotate270
+            | BufferTransform::Flipped90
+            | BufferTransform::Flipped270 => (self.layout.height, self.layout.width),
+            BufferTransform::Normal
+            | BufferTransform::Rotate180
+            | BufferTransform::Flipped
+            | BufferTransform::Flipped180 => (self.layout.width, self.layout.height),
+        }
+    }
+
+    #[must_use]
     pub fn fitted_size(&self, maximum_width: u32, maximum_height: u32) -> (u32, u32) {
-        if maximum_width == 0
-            || maximum_height == 0
-            || self.layout.width == 0
-            || self.layout.height == 0
-        {
+        let (presentation_width, presentation_height) = self.presentation_size();
+        if maximum_width == 0 || maximum_height == 0 {
             return (0, 0);
         }
-        let source_width = u64::from(self.layout.width);
-        let source_height = u64::from(self.layout.height);
+        let source_width = u64::from(presentation_width);
+        let source_height = u64::from(presentation_height);
         let maximum_width_u64 = u64::from(maximum_width);
         let maximum_height_u64 = u64::from(maximum_height);
         if source_width * maximum_height_u64 > maximum_width_u64 * source_height {
@@ -131,6 +169,29 @@ impl ThumbnailFrame {
             )
         }
     }
+
+    const fn raw_coordinates(&self, x: u32, y: u32) -> (u32, u32) {
+        let width = self.layout.width;
+        let height = self.layout.height;
+        match self.transform {
+            BufferTransform::Normal => (x, y),
+            BufferTransform::Rotate90 => (width - 1 - y, x),
+            BufferTransform::Rotate180 => (width - 1 - x, height - 1 - y),
+            BufferTransform::Rotate270 => (y, height - 1 - x),
+            BufferTransform::Flipped => (width - 1 - x, y),
+            BufferTransform::Flipped90 => (y, x),
+            BufferTransform::Flipped180 => (x, height - 1 - y),
+            BufferTransform::Flipped270 => (width - 1 - y, height - 1 - x),
+        }
+    }
+}
+
+const fn swap_red_and_blue(packed: u32) -> u32 {
+    let alpha = packed & 0xFF00_0000;
+    let red = packed & 0x0000_00FF;
+    let green = packed & 0x0000_FF00;
+    let blue = packed & 0x00FF_0000;
+    alpha | (red << 16) | green | (blue >> 16)
 }
 
 impl ShmConstraints {

@@ -36,6 +36,9 @@ enum Command {
         /// Include Window titles in temporary probe output.
         #[arg(long)]
         include_titles: bool,
+        /// Repeat frames on compositor damage and report the Live Thumbnail contract.
+        #[arg(long)]
+        live_thumbnails: bool,
     },
     /// Inventory workspace capabilities or verify one advertised workspace move.
     ProbeWorkspaceMove {
@@ -76,7 +79,10 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Invoke { direction } => service::invoke(direction.into()),
-        Command::Probe { include_titles } => probe::run(include_titles),
+        Command::Probe {
+            include_titles,
+            live_thumbnails,
+        } => probe::run(include_titles, live_thumbnails),
         Command::ProbeWorkspaceMove {
             window,
             workspace,

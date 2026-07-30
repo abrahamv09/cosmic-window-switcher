@@ -3,8 +3,9 @@
 use std::time::Duration;
 
 use cosmic_window_switcher::{
-    CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage, RefreshCeiling,
-    ShmConstraints, ShmFormat, ShmFrameLayout, SwitcherItem, ThumbnailFrame, WindowId,
+    BufferTransform, CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage,
+    RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout, SwitcherItem, ThumbnailFrame,
+    WindowId,
 };
 
 fn window(id: &str) -> WindowId {
@@ -149,11 +150,25 @@ fn capture_failure_keeps_the_switcher_items_icon_and_title_fallback() {
         "org.example.Player".to_owned(),
         "Protected video".to_owned(),
     );
+    item.update_thumbnail(
+        ThumbnailFrame::new(
+            ShmFrameLayout {
+                width: 1,
+                height: 1,
+                stride: 4,
+                byte_len: 4,
+                format: ShmFormat::Xrgb8888,
+            },
+            vec![0; 4],
+        )
+        .expect("the initial thumbnail is exact"),
+    );
 
     item.degrade_thumbnail(CaptureFailure::ProtectedContent);
 
     assert_eq!(item.title(), "Protected video");
     assert_eq!(item.application_icon().name(), "org.example.Player");
+    assert!(item.thumbnail().is_none());
     assert_eq!(
         item.thumbnail_failure(),
         Some(CaptureFailure::ProtectedContent)
@@ -227,4 +242,25 @@ fn invalid_or_unsupported_constraints_degrade_without_requesting_a_buffer() {
             reason: CaptureFailure::UnsupportedFormat,
         }]
     );
+}
+
+#[test]
+fn compositor_transform_orients_content_before_fitting_it() {
+    let frame = ThumbnailFrame::with_transform(
+        ShmFrameLayout {
+            width: 2,
+            height: 1,
+            stride: 8,
+            byte_len: 8,
+            format: ShmFormat::Xrgb8888,
+        },
+        [0x0011_2233_u32.to_ne_bytes(), 0x0044_5566_u32.to_ne_bytes()].concat(),
+        BufferTransform::Rotate90,
+    )
+    .expect("the transformed frame is exact");
+
+    assert_eq!(frame.presentation_size(), (1, 2));
+    assert_eq!(frame.fitted_size(100, 100), (50, 100));
+    assert_eq!(frame.argb_pixel(0, 0), Some(0xFF44_5566));
+    assert_eq!(frame.argb_pixel(0, 1), Some(0xFF11_2233));
 }

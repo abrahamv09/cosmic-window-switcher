@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::sync::Mutex;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail};
 use cosmic_client_toolkit::{
     GlobalData,
     screencopy::{
-        CaptureFrame, CaptureOptions, CaptureSession, CaptureSource, FailureReason, Formats,
+        CaptureFrame, CaptureOptions, CaptureSession, CaptureSource, FailureReason, Formats, Rect,
         ScreencopyFrameData, ScreencopyFrameDataExt, ScreencopyHandler, ScreencopySessionData,
         ScreencopySessionDataExt, ScreencopyState,
     },
@@ -37,7 +41,9 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler, raw::RawPool},
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
+    Connection, Dispatch, QueueHandle, WEnum,
+    backend::WaylandError,
+    delegate_noop,
     globals::registry_queue_init,
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
 };
@@ -50,7 +56,10 @@ use cosmic_window_switcher::{
     SwitchingSession, WindowId,
 };
 
-pub fn run(include_titles: bool) -> Result<()> {
+const LIVE_CONTRACT_FRAME_LIMIT: usize = 3;
+const LIVE_CONTRACT_DURATION: Duration = Duration::from_secs(10);
+
+pub fn run(include_titles: bool, live_thumbnails: bool) -> Result<()> {
     crate::cosmic_session::verify("probe")?;
 
     let connection = Connection::connect_to_env().context("connect to the Wayland compositor")?;
@@ -97,9 +106,14 @@ pub fn run(include_titles: bool) -> Result<()> {
         initial_hold_modifiers: None,
         pending_switching_events: Vec::new(),
         capture_sessions: Vec::new(),
+        capture_allocations: HashMap::new(),
+        pending_recaptures: Vec::new(),
+        captured_frames: HashMap::new(),
+        unchanged_windows: HashSet::new(),
         capture_attempts: 0,
         capture_failures: 0,
         capture_succeeded: false,
+        capture_mode: CaptureProbeMode::from(live_thumbnails),
         terminal_input: false,
         management_can_activate: false,
         title_visibility: TitleVisibility::from(include_titles),
@@ -130,16 +144,63 @@ pub fn run(include_titles: bool) -> Result<()> {
         "Transparent keyboard overlay ready. Press Tab to cycle, Escape to cancel, or release the initial Alt/Ctrl/Super modifier to activate."
     );
 
+    let live_contract_deadline = live_thumbnails.then(|| Instant::now() + LIVE_CONTRACT_DURATION);
     while !probe.is_finished() {
-        event_queue
-            .blocking_dispatch(&mut probe)
-            .context("dispatch COSMIC probe event")?;
+        if live_contract_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            probe.handle_switching_event(SwitchingEvent::Escape);
+            break;
+        }
+        if let Some(deadline) = live_contract_deadline {
+            dispatch_until(&mut event_queue, &mut probe, deadline)?;
+        } else {
+            event_queue
+                .blocking_dispatch(&mut probe)
+                .context("dispatch COSMIC probe event")?;
+        }
+        probe.start_pending_recaptures(&queue_handle);
         connection
             .flush()
             .context("flush requests to the COSMIC compositor")?;
     }
 
     probe.into_result()
+}
+
+fn dispatch_until(
+    event_queue: &mut wayland_client::EventQueue<Probe>,
+    probe: &mut Probe,
+    deadline: Instant,
+) -> Result<()> {
+    event_queue
+        .dispatch_pending(probe)
+        .context("dispatch pending COSMIC probe events")?;
+    let Some(read_guard) = event_queue.prepare_read() else {
+        return Ok(());
+    };
+    let fd = read_guard.connection_fd();
+    let mut poll_fd = rustix::event::PollFd::new(
+        &fd,
+        rustix::event::PollFlags::IN | rustix::event::PollFlags::ERR,
+    );
+    let timeout = duration_to_timespec(deadline.saturating_duration_since(Instant::now()));
+    rustix::event::poll(std::slice::from_mut(&mut poll_fd), Some(&timeout))
+        .context("poll live capture contract events")?;
+    if poll_fd
+        .revents()
+        .intersects(rustix::event::PollFlags::IN | rustix::event::PollFlags::ERR)
+    {
+        match read_guard.read() {
+            Ok(_) => {}
+            Err(WaylandError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(error) => return Err(error).context("read live capture contract events"),
+        }
+    } else {
+        drop(read_guard);
+    }
+    event_queue
+        .dispatch_pending(probe)
+        .context("dispatch live capture contract events")?;
+    Ok(())
 }
 
 fn create_keyboard_overlay(
@@ -178,9 +239,14 @@ struct Probe {
     initial_hold_modifiers: Option<HoldModifiers>,
     pending_switching_events: Vec<SwitchingEvent>,
     capture_sessions: Vec<CaptureSession>,
+    capture_allocations: HashMap<WindowId, Arc<ProbeCaptureAllocation>>,
+    pending_recaptures: Vec<PendingRecapture>,
+    captured_frames: HashMap<WindowId, usize>,
+    unchanged_windows: HashSet<WindowId>,
     capture_attempts: usize,
     capture_failures: usize,
     capture_succeeded: bool,
+    capture_mode: CaptureProbeMode,
     terminal_input: bool,
     management_can_activate: bool,
     title_visibility: TitleVisibility,
@@ -190,18 +256,66 @@ struct Probe {
 }
 
 impl Probe {
-    fn into_result(self) -> Result<()> {
-        if let Some(message) = self.fatal_error {
-            bail!("{message}");
-        }
-        if !self.capture_succeeded {
-            bail!(
+    fn into_result(mut self) -> Result<()> {
+        let result = if let Some(message) = self.fatal_error.take() {
+            Err(anyhow::anyhow!(message))
+        } else if !self.capture_succeeded {
+            Err(anyhow::anyhow!(
                 "no SHM frame was captured ({} attempt(s), {} failure(s)); all Windows remained discoverable",
                 self.capture_attempts,
                 self.capture_failures
+            ))
+        } else {
+            Ok(())
+        };
+        if self.capture_mode == CaptureProbeMode::LiveContract {
+            for session in &self.capture_sessions {
+                let window = capture_session_window_id(session);
+                let frames = self.captured_frames.get(&window).copied().unwrap_or(0);
+                if frames > 1 {
+                    println!(
+                        "Damage contract Window {window}: {frames} frame(s); changed content produced a new frame."
+                    );
+                } else if self.unchanged_windows.contains(&window) {
+                    println!(
+                        "Damage contract Window {window}: unchanged compositor response was suppressed."
+                    );
+                } else {
+                    println!(
+                        "Damage contract Window {window}: {frames} frame(s); no duplicate frame arrived without compositor damage."
+                    );
+                }
+            }
+        }
+        let released_allocations = self.capture_allocations.len();
+        for allocation in self
+            .capture_allocations
+            .drain()
+            .map(|(_, allocation)| allocation)
+        {
+            allocation.release();
+        }
+        self.pending_recaptures.clear();
+        let released_sessions = self.capture_sessions.len();
+        self.capture_sessions.clear();
+        if self.capture_mode == CaptureProbeMode::LiveContract {
+            println!(
+                "Session-stop contract: released {released_sessions} capture session(s) and {released_allocations} outstanding SHM allocation(s)."
             );
         }
-        Ok(())
+        result
+    }
+
+    fn start_pending_recaptures(&mut self, queue_handle: &QueueHandle<Self>) {
+        for pending in std::mem::take(&mut self.pending_recaptures) {
+            self.request_capture_frame(
+                &pending.session,
+                pending.window,
+                pending.size,
+                pending.format,
+                queue_handle,
+            );
+        }
     }
 
     fn start_capture(&mut self, queue_handle: &QueueHandle<Self>) -> Result<()> {
@@ -258,6 +372,86 @@ impl Probe {
         }
 
         Ok(())
+    }
+
+    fn request_capture_frame(
+        &mut self,
+        session: &CaptureSession,
+        window: WindowId,
+        size: (u32, u32),
+        format: wl_shm::Format,
+        queue_handle: &QueueHandle<Self>,
+    ) {
+        let (width, height) = size;
+        let Some(byte_len) = exact_frame_byte_len(width, height) else {
+            self.note_capture_failure(&format!(
+                "Window capture reported invalid size {width}x{height}"
+            ));
+            return;
+        };
+        let Ok(width_i32) = i32::try_from(width) else {
+            self.note_capture_failure(&format!("Window capture width {width} is too large"));
+            return;
+        };
+        let Ok(height_i32) = i32::try_from(height) else {
+            self.note_capture_failure(&format!("Window capture height {height} is too large"));
+            return;
+        };
+        let Some(stride) = width_i32.checked_mul(4) else {
+            self.note_capture_failure(&format!(
+                "Window capture width {width} overflows its stride"
+            ));
+            return;
+        };
+        let (allocation, buffer_damage) = if let Some(allocation) = self
+            .capture_allocations
+            .get(&window)
+            .filter(|allocation| allocation.size == size && allocation.format == format)
+            .cloned()
+        {
+            (allocation, Vec::new())
+        } else {
+            let mut pool = match RawPool::new(byte_len, &self.shm) {
+                Ok(pool) => pool,
+                Err(error) => {
+                    self.note_capture_failure(&format!("allocate memory-only SHM frame: {error}"));
+                    return;
+                }
+            };
+            let buffer =
+                pool.create_buffer(0, width_i32, height_i32, stride, format, (), queue_handle);
+            let allocation = Arc::new(ProbeCaptureAllocation {
+                pool: Mutex::new(Some(pool)),
+                buffer,
+                size,
+                format,
+            });
+            if let Some(previous) = self
+                .capture_allocations
+                .insert(window.clone(), Arc::clone(&allocation))
+            {
+                previous.release();
+            }
+            (
+                allocation,
+                vec![Rect {
+                    x: 0,
+                    y: 0,
+                    width: width_i32,
+                    height: height_i32,
+                }],
+            )
+        };
+        session.capture(
+            &allocation.buffer,
+            &buffer_damage,
+            queue_handle,
+            FrameData {
+                data: ScreencopyFrameData::default(),
+                window_id: window,
+                allocation: Arc::clone(&allocation),
+            },
+        );
     }
 
     fn try_start_switching_session(&mut self) -> Result<()> {
@@ -366,6 +560,22 @@ impl Probe {
 enum TitleVisibility {
     Redacted,
     Included,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CaptureProbeMode {
+    SingleFrame,
+    LiveContract,
+}
+
+impl From<bool> for CaptureProbeMode {
+    fn from(live_thumbnails: bool) -> Self {
+        if live_thumbnails {
+            Self::LiveContract
+        } else {
+            Self::SingleFrame
+        }
+    }
 }
 
 impl From<bool> for TitleVisibility {
@@ -886,15 +1096,59 @@ impl ScreencopySessionDataExt for CaptureData {
 struct FrameData {
     data: ScreencopyFrameData,
     window_id: WindowId,
-    pool: Mutex<RawPool>,
-    size: (u32, u32),
-    format: wl_shm::Format,
+    allocation: Arc<ProbeCaptureAllocation>,
 }
 
 impl ScreencopyFrameDataExt for FrameData {
     fn screencopy_frame_data(&self) -> &ScreencopyFrameData {
         &self.data
     }
+}
+
+struct ProbeCaptureAllocation {
+    pool: Mutex<Option<RawPool>>,
+    buffer: wl_buffer::WlBuffer,
+    size: (u32, u32),
+    format: wl_shm::Format,
+}
+
+impl ProbeCaptureAllocation {
+    fn byte_len(&self) -> Option<usize> {
+        self.pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .map(RawPool::len)
+    }
+
+    fn release(&self) {
+        let mut pool = self
+            .pool
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pool.take().is_some() {
+            self.buffer.destroy();
+        }
+    }
+}
+
+impl Drop for ProbeCaptureAllocation {
+    fn drop(&mut self) {
+        let pool = self
+            .pool
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pool.take().is_some() {
+            self.buffer.destroy();
+        }
+    }
+}
+
+struct PendingRecapture {
+    session: CaptureSession,
+    window: WindowId,
+    size: (u32, u32),
+    format: wl_shm::Format,
 }
 
 fn capture_session_window_id(session: &CaptureSession) -> WindowId {
@@ -930,49 +1184,13 @@ impl ScreencopyHandler for Probe {
             ));
             return;
         };
-
-        let (width, height) = formats.buffer_size;
-        let Some(byte_len) = exact_frame_byte_len(width, height) else {
-            self.note_capture_failure(&format!(
-                "Window capture reported invalid size {width}x{height}"
-            ));
-            return;
-        };
-
-        let mut pool = match RawPool::new(byte_len, &self.shm) {
-            Ok(pool) => pool,
-            Err(error) => {
-                self.note_capture_failure(&format!("allocate memory-only SHM frame: {error}"));
-                return;
-            }
-        };
-        let Ok(width_i32) = i32::try_from(width) else {
-            self.note_capture_failure(&format!("Window capture width {width} is too large"));
-            return;
-        };
-        let Ok(height_i32) = i32::try_from(height) else {
-            self.note_capture_failure(&format!("Window capture height {height} is too large"));
-            return;
-        };
-        let Some(stride) = width_i32.checked_mul(4) else {
-            self.note_capture_failure(&format!(
-                "Window capture width {width} overflows its stride"
-            ));
-            return;
-        };
         let window_id = capture_session_window_id(session);
-        let buffer = pool.create_buffer(0, width_i32, height_i32, stride, format, (), queue_handle);
-        session.capture(
-            &buffer,
-            &[],
+        self.request_capture_frame(
+            session,
+            window_id,
+            formats.buffer_size,
+            format,
             queue_handle,
-            FrameData {
-                data: ScreencopyFrameData::default(),
-                window_id,
-                pool: Mutex::new(pool),
-                size: formats.buffer_size,
-                format,
-            },
         );
     }
 
@@ -983,6 +1201,9 @@ impl ScreencopyHandler for Probe {
         session: &CaptureSession,
     ) {
         let window_id = capture_session_window_id(session);
+        if let Some(allocation) = self.capture_allocations.remove(&window_id) {
+            allocation.release();
+        }
         self.note_capture_failure(&format!("capture stopped for Window {window_id}"));
     }
 
@@ -991,30 +1212,63 @@ impl ScreencopyHandler for Probe {
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
         capture_frame: &CaptureFrame,
-        _frame: cosmic_client_toolkit::screencopy::Frame,
+        frame: cosmic_client_toolkit::screencopy::Frame,
     ) {
         let Some(data) = capture_frame.data::<FrameData>() else {
             self.fatal_error = Some("capture completed without frame metadata".to_owned());
             return;
         };
-        let pool = data.pool.lock().expect("capture pool lock is not poisoned");
-        let expected = exact_frame_byte_len(data.size.0, data.size.1);
-        if expected != Some(pool.len()) {
+        let size = data.allocation.size;
+        let format = data.allocation.format;
+        let byte_len = data.allocation.byte_len();
+        let expected = exact_frame_byte_len(size.0, size.1);
+        if expected != byte_len {
+            data.allocation.release();
+            self.capture_allocations.remove(&data.window_id);
             self.fatal_error = Some(format!(
                 "Window {} returned a non-exact SHM frame",
                 data.window_id
             ));
             return;
         }
+        let previous_frame_count = self
+            .captured_frames
+            .get(&data.window_id)
+            .copied()
+            .unwrap_or(0);
+        if previous_frame_count > 0 && frame.damage.is_empty() {
+            self.unchanged_windows.insert(data.window_id.clone());
+            println!(
+                "Suppressed unchanged SHM frame for Window {}; no duplicate thumbnail was presented.",
+                data.window_id
+            );
+            return;
+        }
         self.capture_succeeded = true;
+        let frame_count = self
+            .captured_frames
+            .entry(data.window_id.clone())
+            .or_default();
+        *frame_count += 1;
         println!(
             "Captured exact-size memory-only SHM frame for Window {}: {}x{}, {} bytes, {:?}.",
             data.window_id,
-            data.size.0,
-            data.size.1,
-            pool.len(),
-            data.format
+            size.0,
+            size.1,
+            byte_len.expect("the exact frame retains its allocation"),
+            format
         );
+        if self.capture_mode == CaptureProbeMode::LiveContract
+            && *frame_count < LIVE_CONTRACT_FRAME_LIMIT
+            && let Some(session) = capture_frame.session::<FrameData>()
+        {
+            self.pending_recaptures.push(PendingRecapture {
+                session,
+                window: data.window_id.clone(),
+                size,
+                format,
+            });
+        }
     }
 
     fn failed(
@@ -1025,6 +1279,10 @@ impl ScreencopyHandler for Probe {
         reason: WEnum<FailureReason>,
     ) {
         let window_id = capture_frame_window_id(capture_frame);
+        if let Some(data) = capture_frame.data::<FrameData>() {
+            data.allocation.release();
+        }
+        self.capture_allocations.remove(&window_id);
         self.note_capture_failure(&format!(
             "SHM capture failed for Window {window_id}: {reason:?}"
         ));
@@ -1047,6 +1305,16 @@ fn exact_frame_byte_len(width: u32, height: u32) -> Option<usize> {
         .ok()?
         .checked_mul(usize::try_from(height).ok()?)?
         .checked_mul(4)
+}
+
+fn duration_to_timespec(duration: Duration) -> rustix::event::Timespec {
+    rustix::event::Timespec {
+        tv_sec: duration
+            .as_secs()
+            .try_into()
+            .expect("the Live Thumbnail probe duration fits in seconds"),
+        tv_nsec: duration.subsec_nanos().into(),
+    }
 }
 
 delegate_compositor!(Probe);

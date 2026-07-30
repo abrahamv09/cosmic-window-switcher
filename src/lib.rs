@@ -9,8 +9,9 @@ use std::{
 mod capture;
 
 pub use capture::{
-    CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage, InvalidThumbnailFrame,
-    RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout, ThumbnailFrame,
+    BufferTransform, CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage,
+    InvalidThumbnailFrame, RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout,
+    ThumbnailFrame,
 };
 
 pub const APPLICATION_ID: &str = "io.github.abrahamv09.CosmicWindowSwitcher";
@@ -380,7 +381,8 @@ impl SwitcherItem {
         self.thumbnail_failure = None;
     }
 
-    pub const fn degrade_thumbnail(&mut self, reason: CaptureFailure) {
+    pub fn degrade_thumbnail(&mut self, reason: CaptureFailure) {
+        self.thumbnail = None;
         self.thumbnail_failure = Some(reason);
     }
 
@@ -458,6 +460,14 @@ impl SwitcherGrid {
     #[must_use]
     pub fn items(&self) -> &[SwitcherItem] {
         &self.items
+    }
+
+    #[must_use]
+    pub fn selected_window(&self) -> Option<&WindowId> {
+        self.items
+            .iter()
+            .find(|item| item.is_selected())
+            .map(SwitcherItem::window)
     }
 
     /// Returns the item range for a viewport that scrolls only enough to keep

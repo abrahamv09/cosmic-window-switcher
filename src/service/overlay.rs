@@ -439,15 +439,15 @@ fn draw_thumbnail(
     }
     let offset_x = bounds.x + (bounds.width - width) / 2;
     let offset_y = bounds.y + (bounds.height - height) / 2;
-    let layout = thumbnail.layout();
+    let (presentation_width, presentation_height) = thumbnail.presentation_size();
     for target_y in 0..height {
-        let source_y = u64::from(target_y) * u64::from(layout.height) / u64::from(height);
+        let source_y = u64::from(target_y) * u64::from(presentation_height) / u64::from(height);
         for target_x in 0..width {
-            let source_x = u64::from(target_x) * u64::from(layout.width) / u64::from(width);
+            let source_x = u64::from(target_x) * u64::from(presentation_width) / u64::from(width);
             let Some(color) = thumbnail
                 .argb_pixel(
-                    u32::try_from(source_x).unwrap_or(layout.width - 1),
-                    u32::try_from(source_y).unwrap_or(layout.height - 1),
+                    u32::try_from(source_x).unwrap_or(presentation_width - 1),
+                    u32::try_from(source_y).unwrap_or(presentation_height - 1),
                 )
                 .map(Color)
             else {

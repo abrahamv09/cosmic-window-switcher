@@ -38,11 +38,12 @@ Use this machine for independent package installation, upgrade, shortcut restora
 
 ## Live Thumbnail contract
 
-Run `cargo run --release -- probe` and the resident Switcher Service on the
-development COSMIC Session. The probe output may include opaque Window ids,
-application identities, exact dimensions, allocation byte counts, and SHM
-formats; it must never include pixels or titles unless title output is
-explicitly requested.
+Run `cargo run --release -- probe --live-thumbnails` and the resident Switcher
+Service on the development COSMIC Session. The probe output may include opaque
+Window ids, application identities, exact dimensions, allocation byte counts,
+SHM formats, and frame counts; it must never include pixels or titles unless
+title output is explicitly requested. Press Escape after exercising the cases
+below so the probe also verifies explicit session-stop cleanup.
 
 | Contract case | Setup and observation |
 | --- | --- |
