@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    CaptureEffect, CaptureSessionModel, CardSize, HoldModifiers, InvocationDirection,
-    InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SwitcherGrid,
-    SwitcherItem, SwitcherService, WindowEvent, WindowId,
+    CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, HoldModifiers,
+    InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
+    SessionDisplay, SurfaceRole, SwitcherGrid, SwitcherItem, SwitcherService, WindowEvent,
+    WindowId, WindowSnapshot, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 fn window(id: &str) -> WindowId {
@@ -397,5 +398,68 @@ fn keyboard_navigation_suspends_offscreen_capture_and_resumes_rows_when_revealed
             CaptureEffect::CreateStream(window("window-0")),
             CaptureEffect::CreateStream(window("window-1")),
         ]
+    );
+}
+
+#[test]
+fn minimized_mixed_windows_activate_through_one_behavior_without_changing_fullscreen_state() {
+    let visible_workspace = WorkspaceId::from("visible");
+    let display = SessionDisplay::from("eDP-1");
+    let desktop = DesktopSnapshot {
+        workspace_groups: vec![WorkspaceGroupSnapshot {
+            outputs: vec![display.clone()],
+            workspaces: vec![visible_workspace.clone()],
+        }],
+        workspaces: vec![WorkspaceSnapshot {
+            id: visible_workspace.clone(),
+            active: true,
+            hidden: false,
+        }],
+        windows: vec![
+            WindowSnapshot {
+                id: window("fullscreen-native"),
+                role: SurfaceRole::Window,
+                workspace_membership: vec![visible_workspace.clone()],
+                output_membership: vec![display.clone()],
+                minimized: false,
+                fullscreen: true,
+                sticky: false,
+            },
+            WindowSnapshot {
+                id: window("minimized-xwayland"),
+                role: SurfaceRole::Window,
+                workspace_membership: vec![visible_workspace],
+                output_membership: vec![display],
+                minimized: true,
+                fullscreen: false,
+                sticky: false,
+            },
+        ],
+    };
+    let context = desktop
+        .switching_context([window("fullscreen-native"), window("minimized-xwayland")])
+        .expect("the focused Window identifies the Session Display");
+    let mut service = service_with_mru_order(&["fullscreen-native", "minimized-xwayland"]);
+
+    assert_eq!(
+        service.invoke_for_window_set(
+            InvocationRequest {
+                direction: InvocationDirection::Next,
+                initial_hold_modifiers: HoldModifiers::ALT,
+            },
+            context.eligible_windows,
+        ),
+        vec![ServiceEffect::PrepareInvisibleOverlay {
+            selected: window("minimized-xwayland"),
+        }]
+    );
+    service.handle(ServiceEvent::SessionReady);
+    assert_eq!(
+        service.handle(ServiceEvent::HoldModifiersChanged(HoldModifiers::empty())),
+        vec![ServiceEffect::Activate(window("minimized-xwayland"))]
+    );
+    assert!(
+        desktop.windows[0].fullscreen,
+        "switching must not clear fullscreen state"
     );
 }

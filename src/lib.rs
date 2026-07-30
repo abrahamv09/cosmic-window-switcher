@@ -301,7 +301,7 @@ impl SwitchingSession {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct SessionDisplay(String);
 
 impl From<&str> for SessionDisplay {
@@ -926,6 +926,114 @@ impl WorkspaceId {
 impl fmt::Display for WorkspaceId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(formatter)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SurfaceRole {
+    Window,
+    Dialog,
+    Utility,
+    Panel,
+    Dock,
+    Menu,
+    Notification,
+    Overlay,
+}
+
+impl SurfaceRole {
+    #[must_use]
+    pub const fn is_switchable(self) -> bool {
+        matches!(self, Self::Window | Self::Dialog | Self::Utility)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceGroupSnapshot {
+    pub outputs: Vec<SessionDisplay>,
+    pub workspaces: Vec<WorkspaceId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkspaceSnapshot {
+    pub id: WorkspaceId,
+    pub active: bool,
+    pub hidden: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowSnapshot {
+    pub id: WindowId,
+    pub role: SurfaceRole,
+    pub workspace_membership: Vec<WorkspaceId>,
+    pub output_membership: Vec<SessionDisplay>,
+    pub minimized: bool,
+    pub fullscreen: bool,
+    pub sticky: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DesktopSnapshot {
+    pub workspace_groups: Vec<WorkspaceGroupSnapshot>,
+    pub workspaces: Vec<WorkspaceSnapshot>,
+    pub windows: Vec<WindowSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SwitchingContext {
+    pub eligible_windows: Vec<WindowId>,
+    pub session_display: SessionDisplay,
+}
+
+impl DesktopSnapshot {
+    /// Derives the immutable Window and display snapshot for one invocation.
+    ///
+    /// Returns `None` when the initially focused Window has no output, because
+    /// the sole Switcher Grid cannot then be placed on a Session Display.
+    #[must_use]
+    pub fn switching_context(
+        &self,
+        mru_order: impl IntoIterator<Item = WindowId>,
+    ) -> Option<SwitchingContext> {
+        let mru_order = mru_order.into_iter().collect::<Vec<_>>();
+        let focused = mru_order.first()?;
+        let session_display = self
+            .windows
+            .iter()
+            .find(|window| window.id == *focused)?
+            .output_membership
+            .first()?
+            .clone();
+        let visible_workspaces = self
+            .workspace_groups
+            .iter()
+            .filter(|group| !group.outputs.is_empty())
+            .flat_map(|group| &group.workspaces)
+            .filter(|workspace_id| {
+                self.workspaces.iter().any(|workspace| {
+                    workspace.id == **workspace_id && workspace.active && !workspace.hidden
+                })
+            })
+            .collect::<std::collections::HashSet<_>>();
+        let eligible_windows = mru_order
+            .into_iter()
+            .filter(|id| {
+                self.windows.iter().any(|window| {
+                    window.id == *id
+                        && window.role.is_switchable()
+                        && (window.sticky
+                            || window
+                                .workspace_membership
+                                .iter()
+                                .any(|workspace| visible_workspaces.contains(workspace)))
+                })
+            })
+            .collect();
+
+        Some(SwitchingContext {
+            eligible_windows,
+            session_display,
+        })
     }
 }
 

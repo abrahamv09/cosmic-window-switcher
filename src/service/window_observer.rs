@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use cosmic_client_toolkit::{
     GlobalData,
     toplevel_management::{ToplevelManagerHandler, ToplevelManagerState},
+    workspace::{WorkspaceHandler, WorkspaceState},
 };
 use cosmic_protocols::toplevel_info::v1::client::{
     zcosmic_toplevel_handle_v1, zcosmic_toplevel_info_v1,
@@ -33,7 +34,7 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler, raw::RawPool},
 };
 use wayland_client::{
-    Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
     globals::registry_queue_init,
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
@@ -45,6 +46,7 @@ use wayland_protocols::ext::{
         ext_foreign_toplevel_image_capture_source_manager_v1, ext_image_capture_source_v1,
     },
     image_copy_capture::v1::client::ext_image_copy_capture_manager_v1,
+    workspace::v1::client::ext_workspace_handle_v1,
 };
 use wayland_protocols::wp::{
     fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
@@ -52,10 +54,11 @@ use wayland_protocols::wp::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, FractionalScale,
-    GridLayout, HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling,
-    ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout, SwitcherGrid,
-    SwitcherItem, SwitchingEvent, WindowEvent, WindowId,
+    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, DesktopSnapshot,
+    FractionalScale, GridLayout, HoldModifiers, InvocationDirection, InvocationRequest,
+    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout,
+    SurfaceRole, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowSnapshot,
+    WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 use super::{
@@ -116,12 +119,17 @@ impl WindowObserver {
         let cosmic_toplevel_info = registry_state
             .bind_one::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
                 &queue_handle,
-                2..=3,
+                3..=3,
                 GlobalData,
             )
-            .context("the compositor does not expose COSMIC Window state")?;
+            .context("the compositor does not expose COSMIC Window workspace state")?;
         let toplevel_manager = ToplevelManagerState::try_new(&registry_state, &queue_handle)
             .context("the compositor does not expose COSMIC Window management")?;
+        let workspace_state = WorkspaceState::new(&registry_state, &queue_handle);
+        workspace_state
+            .workspace_manager()
+            .get()
+            .context("the compositor does not expose live workspace state")?;
         let state = ProtocolObserver {
             queue_handle: queue_handle.clone(),
             registry_state,
@@ -133,6 +141,7 @@ impl WindowObserver {
             viewporter,
             seat_state: SeatState::new(&globals, &queue_handle),
             toplevel_manager,
+            workspace_state,
             _foreign_toplevel_list: foreign_toplevel_list,
             cosmic_toplevel_info,
             capture_backend,
@@ -143,6 +152,8 @@ impl WindowObserver {
             next_observation_key: 0,
             service,
             management_can_activate: false,
+            workspace_snapshot_received: false,
+            toplevel_snapshot_received: false,
             accessibility: AccessibilityBridge::new(),
             overlay_renderer: OverlayRenderer::new(),
             session_card_size: CardSize::Medium,
@@ -178,15 +189,20 @@ impl WindowObserver {
     }
 
     pub(super) fn synchronize_initial_windows(&mut self) -> Result<()> {
-        self.event_queue
-            .roundtrip(&mut self.state)
-            .context("receive initial COSMIC Window state")?;
-        self.event_queue
-            .roundtrip(&mut self.state)
-            .context("finish initial COSMIC Window state")?;
-        self.event_queue
-            .roundtrip(&mut self.state)
-            .context("synchronize initial COSMIC Window state")?;
+        for round in 0..8 {
+            self.event_queue
+                .roundtrip(&mut self.state)
+                .context("receive initial COSMIC Window and workspace state")?;
+            if round >= 2
+                && self.state.workspace_snapshot_received
+                && self.state.toplevel_snapshot_received
+            {
+                break;
+            }
+        }
+        if !self.state.workspace_snapshot_received || !self.state.toplevel_snapshot_received {
+            bail!("COSMIC did not provide a complete Window and workspace snapshot");
+        }
         self.state
             .service
             .write()
@@ -252,6 +268,11 @@ struct ObservedWindow {
     title: String,
     application_id: String,
     outputs: Vec<wl_output::WlOutput>,
+    workspaces: std::collections::HashSet<ext_workspace_handle_v1::ExtWorkspaceHandleV1>,
+    committed_workspaces: std::collections::HashSet<ext_workspace_handle_v1::ExtWorkspaceHandleV1>,
+    minimized: bool,
+    fullscreen: bool,
+    sticky: bool,
 }
 
 #[derive(Default)]
@@ -272,6 +293,7 @@ struct ProtocolObserver {
     viewporter: Option<wp_viewporter::WpViewporter>,
     seat_state: SeatState,
     toplevel_manager: ToplevelManagerState,
+    workspace_state: WorkspaceState,
     capture_backend: ShmCaptureState,
     capture_model: CaptureSessionModel,
     capture_clock: Instant,
@@ -282,6 +304,8 @@ struct ProtocolObserver {
     next_observation_key: u64,
     service: SharedService,
     management_can_activate: bool,
+    workspace_snapshot_received: bool,
+    toplevel_snapshot_received: bool,
     accessibility: AccessibilityBridge,
     overlay_renderer: OverlayRenderer,
     session_card_size: CardSize,
@@ -368,23 +392,42 @@ impl ProtocolObserver {
             return;
         }
 
-        let mru_order = self
+        let complete_mru_order = self
             .service
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .diagnostics()
             .mru_order;
-        if mru_order.len() < 2 {
+        if complete_mru_order.len() < 2 {
             return;
         }
         if !self.management_can_activate || self.seat.is_none() {
             self.fallback(direction);
             return;
         }
-        let Some(session_output) = mru_order
+        if !self.workspace_snapshot_received || !self.toplevel_snapshot_received {
+            self.fallback(direction);
+            return;
+        }
+        let Some(context) = self
+            .desktop_snapshot()
+            .switching_context(complete_mru_order.clone())
+        else {
+            self.fallback(direction);
+            return;
+        };
+        if context.eligible_windows.len() < 2 {
+            return;
+        }
+        let Some(session_output) = complete_mru_order
             .first()
             .and_then(|focused| self.observed_window(focused))
-            .and_then(|window| window.outputs.first())
+            .and_then(|window| {
+                window.outputs.iter().find(|output| {
+                    self.output_display(output)
+                        .is_some_and(|display| display == context.session_display)
+                })
+            })
             .cloned()
         else {
             self.fallback(direction);
@@ -413,7 +456,7 @@ impl ProtocolObserver {
         layer.set_size(0, 0);
         layer.commit();
         self.layer = Some(layer);
-        self.session_window_order = mru_order;
+        self.session_window_order = context.eligible_windows;
         self.session_output = Some(session_output);
         self.grid = None;
         self.interaction = InteractionState::default();
@@ -624,6 +667,87 @@ impl ProtocolObserver {
         self.windows
             .iter()
             .find(|window| self.observations.window_id(window.key) == Some(id))
+    }
+
+    fn desktop_snapshot(&self) -> DesktopSnapshot {
+        let workspace_groups = self
+            .workspace_state
+            .workspace_groups()
+            .map(|group| WorkspaceGroupSnapshot {
+                outputs: group
+                    .outputs
+                    .iter()
+                    .filter_map(|output| self.output_display(output))
+                    .collect(),
+                workspaces: group
+                    .workspaces
+                    .iter()
+                    .map(|workspace| self.workspace_id(workspace))
+                    .collect(),
+            })
+            .collect();
+        let workspaces = self
+            .workspace_state
+            .workspaces()
+            .map(|workspace| WorkspaceSnapshot {
+                id: self.workspace_id(&workspace.handle),
+                active: workspace
+                    .state
+                    .contains(ext_workspace_handle_v1::State::Active),
+                hidden: workspace
+                    .state
+                    .contains(ext_workspace_handle_v1::State::Hidden),
+            })
+            .collect();
+        let windows = self
+            .windows
+            .iter()
+            .filter_map(|window| {
+                Some(WindowSnapshot {
+                    id: self.observations.window_id(window.key)?.clone(),
+                    // ext-foreign-toplevel exposes independently switchable
+                    // Native Wayland and compositor-managed XWayland Windows
+                    // through this one role. Layer-shell surfaces never enter
+                    // this registry.
+                    role: SurfaceRole::Window,
+                    workspace_membership: window
+                        .committed_workspaces
+                        .iter()
+                        .map(|workspace| self.workspace_id(workspace))
+                        .collect(),
+                    output_membership: window
+                        .outputs
+                        .iter()
+                        .filter_map(|output| self.output_display(output))
+                        .collect(),
+                    minimized: window.minimized,
+                    fullscreen: window.fullscreen,
+                    sticky: window.sticky,
+                })
+            })
+            .collect();
+
+        DesktopSnapshot {
+            workspace_groups,
+            workspaces,
+            windows,
+        }
+    }
+
+    fn output_display(&self, output: &wl_output::WlOutput) -> Option<SessionDisplay> {
+        self.output_state.info(output).map(|info| {
+            SessionDisplay::from(info.name.unwrap_or_else(|| format!("output-{}", info.id)))
+        })
+    }
+
+    fn workspace_id(&self, handle: &ext_workspace_handle_v1::ExtWorkspaceHandleV1) -> WorkspaceId {
+        self.workspace_state
+            .workspace_info(handle)
+            .and_then(|workspace| workspace.id.as_deref())
+            .map_or_else(
+                || WorkspaceId::from(format!("wayland:{}", handle.id().protocol_id())),
+                |id| WorkspaceId::from(format!("id:{id}")),
+            )
     }
 
     fn apply_capture_effects(&mut self, effects: Vec<CaptureEffect>) -> Result<()> {
@@ -1390,6 +1514,16 @@ impl ToplevelManagerHandler for ProtocolObserver {
     }
 }
 
+impl WorkspaceHandler for ProtocolObserver {
+    fn workspace_state(&mut self) -> &mut WorkspaceState {
+        &mut self.workspace_state
+    }
+
+    fn done(&mut self) {
+        self.workspace_snapshot_received = true;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Observation {
     Discovered(ObservationKey),
@@ -1537,6 +1671,11 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, GlobalData
                     title: String::new(),
                     application_id: String::new(),
                     outputs: Vec::new(),
+                    workspaces: std::collections::HashSet::new(),
+                    committed_workspaces: std::collections::HashSet::new(),
+                    minimized: false,
+                    fullscreen: false,
+                    sticky: false,
                 });
                 state.apply(Observation::Discovered(key));
             }
@@ -1605,13 +1744,19 @@ impl Dispatch<ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1, ()> fo
 
 impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, GlobalData> for ProtocolObserver {
     fn event(
-        _state: &mut Self,
+        state: &mut Self,
         _info: &zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
-        _event: zcosmic_toplevel_info_v1::Event,
+        event: zcosmic_toplevel_info_v1::Event,
         _data: &GlobalData,
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
     ) {
+        if let zcosmic_toplevel_info_v1::Event::Done = event {
+            for window in &mut state.windows {
+                window.committed_workspaces.clone_from(&window.workspaces);
+            }
+            state.toplevel_snapshot_received = true;
+        }
     }
 
     wayland_client::event_created_child!(ProtocolObserver, zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, [
@@ -1652,22 +1797,43 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, GlobalData>
                 }
             }
             zcosmic_toplevel_handle_v1::Event::State { state: states } => {
+                if let Some(window) = state.windows.iter_mut().find(|window| window.key == key) {
+                    window.minimized =
+                        toplevel_has_state(&states, zcosmic_toplevel_handle_v1::State::Minimized);
+                    window.fullscreen =
+                        toplevel_has_state(&states, zcosmic_toplevel_handle_v1::State::Fullscreen);
+                    window.sticky =
+                        toplevel_has_state(&states, zcosmic_toplevel_handle_v1::State::Sticky);
+                }
                 state.apply(Observation::ActivationChanged {
                     key,
-                    activated: toplevel_is_activated(&states),
+                    activated: toplevel_has_state(
+                        &states,
+                        zcosmic_toplevel_handle_v1::State::Activated,
+                    ),
                 });
+            }
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceEnter { workspace } => {
+                if let Some(window) = state.windows.iter_mut().find(|window| window.key == key) {
+                    window.workspaces.insert(workspace);
+                }
+            }
+            zcosmic_toplevel_handle_v1::Event::ExtWorkspaceLeave { workspace } => {
+                if let Some(window) = state.windows.iter_mut().find(|window| window.key == key) {
+                    window.workspaces.remove(&workspace);
+                }
             }
             _ => {}
         }
     }
 }
 
-fn toplevel_is_activated(bytes: &[u8]) -> bool {
+fn toplevel_has_state(bytes: &[u8], expected: zcosmic_toplevel_handle_v1::State) -> bool {
     bytes.chunks_exact(4).any(|bytes| {
         zcosmic_toplevel_handle_v1::State::try_from(u32::from_ne_bytes(
             bytes.try_into().expect("state chunks contain four bytes"),
         ))
-        .is_ok_and(|state| state == zcosmic_toplevel_handle_v1::State::Activated)
+        .is_ok_and(|state| state == expected)
     })
 }
 
@@ -1722,6 +1888,7 @@ wayland_client::delegate_dispatch!(ProtocolObserver: [
 wayland_client::delegate_dispatch!(ProtocolObserver: [CaptureSession: CaptureSessionData] => ShmCaptureState);
 wayland_client::delegate_dispatch!(ProtocolObserver: [CaptureFrame: CaptureFrameData] => ShmCaptureState);
 cosmic_client_toolkit::delegate_toplevel_manager!(ProtocolObserver);
+cosmic_client_toolkit::delegate_workspace!(ProtocolObserver);
 delegate_noop!(ProtocolObserver: ignore wl_buffer::WlBuffer);
 delegate_noop!(ProtocolObserver: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
 delegate_noop!(ProtocolObserver: ignore wp_viewporter::WpViewporter);

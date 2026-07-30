@@ -59,3 +59,30 @@ The deterministic `live_thumbnail_capture` test exercises the same public
 capture contract with fake damage, time, constraints, failure, viewport, Window
 closure, and session-stop events. It is the repeatable regression suite; the
 live matrix verifies compositor interoperability.
+
+## Live Window and workspace-state contract
+
+Run `cargo run --release -- probe-workspace-move` before each scenario to record
+the compositor's live workspace groups, output assignments, active workspace
+state, and Window membership. Run the resident service, invoke the Switcher
+Grid, and compare its Window set and display placement with that inventory.
+Change COSMIC's workspace policy while the service remains running and repeat
+the invocation; an already open Switching Session remains stable, while the
+next one uses the new state.
+
+| Contract case | Setup and observation |
+| --- | --- |
+| Spanning workspaces | With two displays in one workspace group, place a Window on each display and verify both are present in one MRU Order. |
+| Separate-display workspaces | Use one workspace group per display, activate a different workspace on each, and verify Windows from both active workspaces are present while inactive-workspace Windows are absent. |
+| Runtime policy change | Switch between spanning and separate-display policy without restarting the service and verify the next Switching Session follows the new groups and active workspaces. |
+| Minimized Window | Minimize an Eligible Window, select it, and verify COSMIC restores and focuses it. |
+| Dialog and utility Window | Open independently exposed dialog and utility Windows and verify each has its own Switcher Item. |
+| Shell surfaces | Verify COSMIC panels, docks, menus, notifications, and overlays never appear as Switcher Items. |
+| Mixed Window types | Open one Native Wayland Window and one compositor-managed XWayland Window and verify both use the same MRU Order and activation behavior. |
+| Fullscreen Window | Invoke over a fullscreen Window, verify exactly one overlay appears above it on that Window's display, then cancel and confirm fullscreen state was preserved. |
+| Multi-output placement | Focus a Window on each available display in turn and verify the sole overlay follows the initially focused Window without duplication. |
+
+The deterministic `workspace_eligibility` and `service_scenario` tests exercise
+the same public snapshot and activation behavior with fake spanning and
+separate-display groups, active-state changes, minimized/fullscreen state,
+dialogs, utility Windows, shell surfaces, and mixed Window identities.
