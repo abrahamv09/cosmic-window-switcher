@@ -9,6 +9,7 @@ use zbus::{
 };
 
 use cosmic_window_switcher::{
+    CaptureBackend, CaptureBackendSelection, DmaBufCompatibility, DmaBufFallbackReason,
     InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics, WindowId, WindowScope,
     WorkspaceEligibilityState,
 };
@@ -45,11 +46,15 @@ pub(super) fn status() -> Result<ServiceDiagnostics> {
         Connection::session().context("connect to the user-session D-Bus for status")?;
     let proxy = Proxy::new(&connection, BUS_NAME, OBJECT_PATH, INTERFACE_NAME)
         .context("create the Switcher Service status proxy")?;
-    let diagnostics: DbusDiagnostics = proxy
-        .call("Status", &())
-        .context("request Switcher Service status")?;
-
-    Ok(diagnostics.into())
+    match proxy.call::<_, _, DbusDiagnosticsV2>("Status2", &()) {
+        Ok(diagnostics) => Ok(diagnostics.into()),
+        Err(versioned_error) => {
+            let diagnostics: DbusDiagnostics = proxy.call("Status", &()).with_context(|| {
+                format!("request Switcher Service status after Status2 failed: {versioned_error}")
+            })?;
+            Ok(diagnostics.into())
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize, Type)]
@@ -60,6 +65,13 @@ struct DbusDiagnostics {
     workspace_eligibility: String,
     advertised_version: u32,
     required_version: u32,
+}
+
+#[derive(Deserialize, Serialize, Type)]
+struct DbusDiagnosticsV2 {
+    diagnostics: DbusDiagnostics,
+    capture_backend: String,
+    capture_backend_fallback: String,
 }
 
 impl From<ServiceDiagnostics> for DbusDiagnostics {
@@ -110,6 +122,23 @@ impl From<ServiceDiagnostics> for DbusDiagnostics {
     }
 }
 
+impl From<ServiceDiagnostics> for DbusDiagnosticsV2 {
+    fn from(diagnostics: ServiceDiagnostics) -> Self {
+        Self {
+            capture_backend: diagnostics
+                .capture_backend
+                .backend()
+                .diagnostic_name()
+                .to_owned(),
+            capture_backend_fallback: diagnostics
+                .capture_backend
+                .fallback_reason()
+                .map_or_else(String::new, |reason| reason.diagnostic_name().to_owned()),
+            diagnostics: diagnostics.into(),
+        }
+    }
+}
+
 impl From<DbusDiagnostics> for ServiceDiagnostics {
     fn from(diagnostics: DbusDiagnostics) -> Self {
         Self {
@@ -153,7 +182,30 @@ impl From<DbusDiagnostics> for ServiceDiagnostics {
                 }
                 _ => WorkspaceEligibilityState::AwaitingSnapshot,
             },
+            capture_backend: CaptureBackendSelection::default(),
         }
+    }
+}
+
+impl From<DbusDiagnosticsV2> for ServiceDiagnostics {
+    fn from(diagnostics: DbusDiagnosticsV2) -> Self {
+        let fallback_reason = match diagnostics.capture_backend_fallback.as_str() {
+            "incompatible-device" => DmaBufFallbackReason::IncompatibleDevice,
+            "unsupported-format" => DmaBufFallbackReason::UnsupportedFormat,
+            "unsupported-modifier" => DmaBufFallbackReason::UnsupportedModifier,
+            "allocation-failed" => DmaBufFallbackReason::AllocationFailed,
+            "synchronization-unavailable" => DmaBufFallbackReason::SynchronizationUnavailable,
+            "release-unavailable" => DmaBufFallbackReason::ReleaseUnavailable,
+            _ => DmaBufFallbackReason::ImportFailed,
+        };
+        let mut service_diagnostics = ServiceDiagnostics::from(diagnostics.diagnostics);
+        service_diagnostics.capture_backend =
+            if diagnostics.capture_backend == CaptureBackend::DmaBuf.diagnostic_name() {
+                DmaBufCompatibility::complete().select_backend()
+            } else {
+                CaptureBackendSelection::shared_memory(fallback_reason)
+            };
+        service_diagnostics
     }
 }
 
@@ -165,6 +217,14 @@ struct ServiceInterface {
 #[zbus::interface(name = "io.github.abrahamv09.CosmicWindowSwitcher1")]
 impl ServiceInterface {
     fn status(&self) -> DbusDiagnostics {
+        self.service
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .diagnostics()
+            .into()
+    }
+
+    fn status2(&self) -> DbusDiagnosticsV2 {
         self.service
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -222,6 +282,7 @@ mod tests {
                 mru_order: vec![WindowId::from("opaque")],
                 window_scope: WindowScope::AllWorkspaces,
                 workspace_eligibility: state,
+                capture_backend: CaptureBackendSelection::default(),
             };
 
             assert_eq!(
@@ -235,10 +296,42 @@ mod tests {
             mru_order: Vec::new(),
             window_scope: WindowScope::VisibleWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::Ready,
+            capture_backend: CaptureBackendSelection::default(),
         };
         assert_eq!(
             ServiceDiagnostics::from(DbusDiagnostics::from(visible.clone())),
             visible
         );
+    }
+
+    #[test]
+    fn versioned_dbus_diagnostics_preserve_capture_backend_selection() {
+        let selections = [
+            DmaBufCompatibility::complete().select_backend(),
+            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::IncompatibleDevice),
+            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::UnsupportedFormat),
+            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::UnsupportedModifier),
+            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::AllocationFailed),
+            CaptureBackendSelection::shared_memory(
+                DmaBufFallbackReason::SynchronizationUnavailable,
+            ),
+            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::ImportFailed),
+            CaptureBackendSelection::shared_memory(DmaBufFallbackReason::ReleaseUnavailable),
+        ];
+
+        for capture_backend in selections {
+            let diagnostics = ServiceDiagnostics {
+                mru_history: MruHistoryAccuracy::Accurate,
+                mru_order: vec![WindowId::from("opaque")],
+                window_scope: WindowScope::AllWorkspaces,
+                workspace_eligibility: WorkspaceEligibilityState::Ready,
+                capture_backend,
+            };
+
+            assert_eq!(
+                ServiceDiagnostics::from(DbusDiagnosticsV2::from(diagnostics.clone())),
+                diagnostics
+            );
+        }
     }
 }

@@ -5,6 +5,140 @@ use std::{error::Error, fmt, time::Duration};
 use crate::WindowId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureBackend {
+    DmaBuf,
+    SharedMemory,
+}
+
+impl CaptureBackend {
+    #[must_use]
+    pub const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::DmaBuf => "dma-buf",
+            Self::SharedMemory => "shared-memory",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DmaBufFallbackReason {
+    IncompatibleDevice,
+    UnsupportedFormat,
+    UnsupportedModifier,
+    AllocationFailed,
+    SynchronizationUnavailable,
+    ImportFailed,
+    ReleaseUnavailable,
+}
+
+impl DmaBufFallbackReason {
+    #[must_use]
+    pub const fn diagnostic_name(self) -> &'static str {
+        match self {
+            Self::IncompatibleDevice => "incompatible-device",
+            Self::UnsupportedFormat => "unsupported-format",
+            Self::UnsupportedModifier => "unsupported-modifier",
+            Self::AllocationFailed => "allocation-failed",
+            Self::SynchronizationUnavailable => "synchronization-unavailable",
+            Self::ImportFailed => "import-failed",
+            Self::ReleaseUnavailable => "release-unavailable",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CaptureBackendSelection {
+    backend: CaptureBackend,
+    fallback_reason: Option<DmaBufFallbackReason>,
+}
+
+impl Default for CaptureBackendSelection {
+    fn default() -> Self {
+        Self::shared_memory(DmaBufFallbackReason::ImportFailed)
+    }
+}
+
+impl CaptureBackendSelection {
+    #[must_use]
+    pub const fn shared_memory(reason: DmaBufFallbackReason) -> Self {
+        Self {
+            backend: CaptureBackend::SharedMemory,
+            fallback_reason: Some(reason),
+        }
+    }
+
+    #[must_use]
+    pub const fn backend(self) -> CaptureBackend {
+        self.backend
+    }
+
+    #[must_use]
+    pub const fn fallback_reason(self) -> Option<DmaBufFallbackReason> {
+        self.fallback_reason
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DmaBufContractStatus {
+    Compatible,
+    Incompatible,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaBufCompatibility {
+    pub device: DmaBufContractStatus,
+    pub format: DmaBufContractStatus,
+    pub modifier: DmaBufContractStatus,
+    pub allocation: DmaBufContractStatus,
+    pub synchronization: DmaBufContractStatus,
+    pub import: DmaBufContractStatus,
+    pub release: DmaBufContractStatus,
+}
+
+impl DmaBufCompatibility {
+    #[must_use]
+    pub const fn complete() -> Self {
+        Self {
+            device: DmaBufContractStatus::Compatible,
+            format: DmaBufContractStatus::Compatible,
+            modifier: DmaBufContractStatus::Compatible,
+            allocation: DmaBufContractStatus::Compatible,
+            synchronization: DmaBufContractStatus::Compatible,
+            import: DmaBufContractStatus::Compatible,
+            release: DmaBufContractStatus::Compatible,
+        }
+    }
+
+    #[must_use]
+    pub fn select_backend(self) -> CaptureBackendSelection {
+        let fallback_reason = if self.device == DmaBufContractStatus::Incompatible {
+            Some(DmaBufFallbackReason::IncompatibleDevice)
+        } else if self.format == DmaBufContractStatus::Incompatible {
+            Some(DmaBufFallbackReason::UnsupportedFormat)
+        } else if self.modifier == DmaBufContractStatus::Incompatible {
+            Some(DmaBufFallbackReason::UnsupportedModifier)
+        } else if self.allocation == DmaBufContractStatus::Incompatible {
+            Some(DmaBufFallbackReason::AllocationFailed)
+        } else if self.synchronization == DmaBufContractStatus::Incompatible {
+            Some(DmaBufFallbackReason::SynchronizationUnavailable)
+        } else if self.import == DmaBufContractStatus::Incompatible {
+            Some(DmaBufFallbackReason::ImportFailed)
+        } else if self.release == DmaBufContractStatus::Incompatible {
+            Some(DmaBufFallbackReason::ReleaseUnavailable)
+        } else {
+            None
+        };
+        match fallback_reason {
+            Some(reason) => CaptureBackendSelection::shared_memory(reason),
+            None => CaptureBackendSelection {
+                backend: CaptureBackend::DmaBuf,
+                fallback_reason: None,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShmFormat {
     Abgr8888,
     Argb8888,
@@ -338,6 +472,12 @@ pub enum CaptureEffect {
     ReleaseStream(WindowId),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureOpportunity {
+    InputPending,
+    InputDrained,
+}
+
 #[derive(Clone, Debug)]
 struct CaptureStream {
     window: WindowId,
@@ -353,6 +493,7 @@ pub struct CaptureSessionModel {
     streams: Vec<CaptureStream>,
     degraded: Vec<WindowId>,
     selected: Option<WindowId>,
+    background_cursor: usize,
 }
 
 impl CaptureSessionModel {
@@ -364,6 +505,7 @@ impl CaptureSessionModel {
             streams: Vec::new(),
             degraded: Vec::new(),
             selected: None,
+            background_cursor: 0,
         }
     }
 
@@ -385,6 +527,9 @@ impl CaptureSessionModel {
             }
             retained
         });
+        self.background_cursor = self
+            .background_cursor
+            .min(self.streams.len().saturating_sub(1));
         for window in windows {
             if self.streams.iter().any(|stream| stream.window == window)
                 || self.degraded.contains(&window)
@@ -432,11 +577,8 @@ impl CaptureSessionModel {
         if stream.outstanding {
             return Vec::new();
         }
-        stream.outstanding = true;
-        vec![CaptureEffect::RequestFrame {
-            window: window.clone(),
-            layout,
-        }]
+        stream.next_request_at = Some(Duration::ZERO);
+        Vec::new()
     }
 
     pub fn frame_ready(
@@ -452,6 +594,9 @@ impl CaptureSessionModel {
         else {
             return Vec::new();
         };
+        if !stream.outstanding {
+            return Vec::new();
+        }
         stream.outstanding = false;
         stream.next_request_at =
             Some(now + self.refresh_ceiling.interval(self.display_refresh_rate));
@@ -462,31 +607,38 @@ impl CaptureSessionModel {
         }
     }
 
-    pub fn refresh_due(&mut self, now: Duration) -> Vec<CaptureEffect> {
-        let selected = self.selected.as_ref();
-        let mut stream_indices = (0..self.streams.len()).collect::<Vec<_>>();
-        stream_indices.sort_by_key(|index| {
-            usize::from(selected.is_none_or(|selected| self.streams[*index].window != *selected))
-        });
+    pub fn refresh_due(
+        &mut self,
+        now: Duration,
+        opportunity: CaptureOpportunity,
+    ) -> Vec<CaptureEffect> {
+        if opportunity == CaptureOpportunity::InputPending {
+            return Vec::new();
+        }
         let mut effects = Vec::new();
-        for index in stream_indices {
-            let stream = &mut self.streams[index];
-            if stream.outstanding
-                || stream
-                    .next_request_at
-                    .is_none_or(|next_request_at| next_request_at > now)
-            {
+        let selected_index = self.selected.as_ref().and_then(|selected| {
+            self.streams
+                .iter()
+                .position(|stream| stream.window == *selected)
+        });
+        if let Some(index) = selected_index
+            && let Some(effect) = request_due_frame(&mut self.streams[index], now)
+        {
+            effects.push(effect);
+        }
+
+        let stream_count = self.streams.len();
+        for offset in 0..stream_count {
+            let index = (self.background_cursor + offset) % stream_count;
+            if Some(index) == selected_index {
                 continue;
             }
-            let Some(layout) = stream.layout else {
+            let Some(effect) = request_due_frame(&mut self.streams[index], now) else {
                 continue;
             };
-            stream.outstanding = true;
-            stream.next_request_at = None;
-            effects.push(CaptureEffect::RequestFrame {
-                window: stream.window.clone(),
-                layout,
-            });
+            effects.push(effect);
+            self.background_cursor = (index + 1) % stream_count;
+            break;
         }
         effects
     }
@@ -524,6 +676,7 @@ impl CaptureSessionModel {
 
     pub fn stop(&mut self) -> Vec<CaptureEffect> {
         self.degraded.clear();
+        self.background_cursor = 0;
         self.streams
             .drain(..)
             .map(|stream| CaptureEffect::ReleaseStream(stream.window))
@@ -548,4 +701,21 @@ impl CaptureSessionModel {
             .filter_map(|stream| stream.next_request_at)
             .min()
     }
+}
+
+fn request_due_frame(stream: &mut CaptureStream, now: Duration) -> Option<CaptureEffect> {
+    if stream.outstanding
+        || stream
+            .next_request_at
+            .is_none_or(|next_request_at| next_request_at > now)
+    {
+        return None;
+    }
+    let layout = stream.layout?;
+    stream.outstanding = true;
+    stream.next_request_at = None;
+    Some(CaptureEffect::RequestFrame {
+        window: stream.window.clone(),
+        layout,
+    })
 }

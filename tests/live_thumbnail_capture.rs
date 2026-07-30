@@ -3,9 +3,10 @@
 use std::time::Duration;
 
 use cosmic_window_switcher::{
-    BufferTransform, CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage,
-    RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout, SwitcherItem, ThumbnailFrame,
-    WindowId,
+    BufferTransform, CaptureBackend, CaptureEffect, CaptureFailure, CaptureOpportunity,
+    CaptureSessionModel, DmaBufCompatibility, DmaBufContractStatus, DmaBufFallbackReason,
+    FrameDamage, RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout, SwitcherItem,
+    ThumbnailFrame, WindowId,
 };
 
 fn window(id: &str) -> WindowId {
@@ -20,9 +21,93 @@ fn constraints() -> ShmConstraints {
     }
 }
 
+fn request_every_due_frame(captures: &mut CaptureSessionModel, now: Duration) {
+    while captures
+        .next_request_at()
+        .is_some_and(|deadline| deadline <= now)
+    {
+        let effects = captures.refresh_due(now, CaptureOpportunity::InputDrained);
+        assert!(
+            !effects.is_empty(),
+            "due capture work must make bounded progress"
+        );
+    }
+}
+
+#[test]
+fn dma_buf_is_selected_only_for_a_complete_compositor_to_renderer_contract() {
+    let selection = DmaBufCompatibility::complete().select_backend();
+
+    assert_eq!(selection.backend(), CaptureBackend::DmaBuf);
+    assert_eq!(selection.fallback_reason(), None);
+}
+
+#[test]
+fn every_incompatible_dma_buf_stage_falls_back_to_shared_memory() {
+    let cases = [
+        (
+            DmaBufCompatibility {
+                device: DmaBufContractStatus::Incompatible,
+                ..DmaBufCompatibility::complete()
+            },
+            DmaBufFallbackReason::IncompatibleDevice,
+        ),
+        (
+            DmaBufCompatibility {
+                format: DmaBufContractStatus::Incompatible,
+                ..DmaBufCompatibility::complete()
+            },
+            DmaBufFallbackReason::UnsupportedFormat,
+        ),
+        (
+            DmaBufCompatibility {
+                modifier: DmaBufContractStatus::Incompatible,
+                ..DmaBufCompatibility::complete()
+            },
+            DmaBufFallbackReason::UnsupportedModifier,
+        ),
+        (
+            DmaBufCompatibility {
+                allocation: DmaBufContractStatus::Incompatible,
+                ..DmaBufCompatibility::complete()
+            },
+            DmaBufFallbackReason::AllocationFailed,
+        ),
+        (
+            DmaBufCompatibility {
+                synchronization: DmaBufContractStatus::Incompatible,
+                ..DmaBufCompatibility::complete()
+            },
+            DmaBufFallbackReason::SynchronizationUnavailable,
+        ),
+        (
+            DmaBufCompatibility {
+                import: DmaBufContractStatus::Incompatible,
+                ..DmaBufCompatibility::complete()
+            },
+            DmaBufFallbackReason::ImportFailed,
+        ),
+        (
+            DmaBufCompatibility {
+                release: DmaBufContractStatus::Incompatible,
+                ..DmaBufCompatibility::complete()
+            },
+            DmaBufFallbackReason::ReleaseUnavailable,
+        ),
+    ];
+
+    for (compatibility, reason) in cases {
+        let selection = compatibility.select_backend();
+
+        assert_eq!(selection.backend(), CaptureBackend::SharedMemory);
+        assert_eq!(selection.fallback_reason(), Some(reason));
+    }
+}
+
 #[test]
 fn visible_windows_negotiate_exact_shm_frames_with_one_request_outstanding() {
     let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+    captures.set_selected(Some(window("selected")));
 
     assert_eq!(
         captures.set_visible([window("selected"), window("other")]),
@@ -31,18 +116,40 @@ fn visible_windows_negotiate_exact_shm_frames_with_one_request_outstanding() {
             CaptureEffect::CreateStream(window("other")),
         ]
     );
+    assert!(
+        captures
+            .initialized(&window("selected"), &constraints())
+            .is_empty()
+    );
+    assert!(
+        captures
+            .initialized(&window("other"), &constraints())
+            .is_empty()
+    );
     assert_eq!(
-        captures.initialized(&window("selected"), &constraints()),
-        vec![CaptureEffect::RequestFrame {
-            window: window("selected"),
-            layout: ShmFrameLayout {
-                width: 1_920,
-                height: 1_080,
-                stride: 7_680,
-                byte_len: 8_294_400,
-                format: ShmFormat::Argb8888,
+        captures.refresh_due(Duration::ZERO, CaptureOpportunity::InputDrained),
+        vec![
+            CaptureEffect::RequestFrame {
+                window: window("selected"),
+                layout: ShmFrameLayout {
+                    width: 1_920,
+                    height: 1_080,
+                    stride: 7_680,
+                    byte_len: 8_294_400,
+                    format: ShmFormat::Argb8888,
+                },
             },
-        }]
+            CaptureEffect::RequestFrame {
+                window: window("other"),
+                layout: ShmFrameLayout {
+                    width: 1_920,
+                    height: 1_080,
+                    stride: 7_680,
+                    byte_len: 8_294_400,
+                    format: ShmFormat::Argb8888,
+                },
+            },
+        ]
     );
     assert!(
         captures
@@ -57,6 +164,7 @@ fn changed_content_refreshes_at_the_ceiling_while_unchanged_content_is_not_prese
     captures.set_visible([window("selected")]);
     captures.set_selected(Some(window("selected")));
     captures.initialized(&window("selected"), &constraints());
+    request_every_due_frame(&mut captures, Duration::ZERO);
 
     assert_eq!(
         captures.frame_ready(
@@ -66,9 +174,13 @@ fn changed_content_refreshes_at_the_ceiling_while_unchanged_content_is_not_prese
         ),
         vec![CaptureEffect::PresentThumbnail(window("selected"))]
     );
-    assert!(captures.refresh_due(Duration::from_millis(32)).is_empty());
+    assert!(
+        captures
+            .refresh_due(Duration::from_millis(32), CaptureOpportunity::InputDrained,)
+            .is_empty()
+    );
     assert_eq!(
-        captures.refresh_due(Duration::from_millis(34)),
+        captures.refresh_due(Duration::from_millis(34), CaptureOpportunity::InputDrained,),
         vec![CaptureEffect::RequestFrame {
             window: window("selected"),
             layout: ShmFrameLayout {
@@ -93,15 +205,20 @@ fn match_display_uses_the_session_displays_current_refresh_rate() {
     captures.set_display_refresh_rate(120);
     captures.set_visible([window("selected")]);
     captures.initialized(&window("selected"), &constraints());
+    request_every_due_frame(&mut captures, Duration::ZERO);
     captures.frame_ready(
         &window("selected"),
         Duration::ZERO,
         &[FrameDamage::new(0, 0, 1_920, 1_080)],
     );
 
-    assert!(captures.refresh_due(Duration::from_millis(8)).is_empty());
+    assert!(
+        captures
+            .refresh_due(Duration::from_millis(8), CaptureOpportunity::InputDrained,)
+            .is_empty()
+    );
     assert_eq!(
-        captures.refresh_due(Duration::from_millis(9)),
+        captures.refresh_due(Duration::from_millis(9), CaptureOpportunity::InputDrained,),
         vec![CaptureEffect::RequestFrame {
             window: window("selected"),
             layout: ShmFrameLayout {
@@ -113,6 +230,140 @@ fn match_display_uses_the_session_displays_current_refresh_rate() {
             },
         }]
     );
+}
+
+#[test]
+fn input_runs_before_selected_and_bounded_round_robin_capture_work() {
+    let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+    let windows = [
+        window("background-a"),
+        window("selected"),
+        window("background-b"),
+        window("background-c"),
+    ];
+    captures.set_visible(windows.clone());
+    captures.set_selected(Some(window("selected")));
+    for window in &windows {
+        captures.initialized(window, &constraints());
+    }
+    request_every_due_frame(&mut captures, Duration::ZERO);
+    for window in &windows {
+        captures.frame_ready(
+            window,
+            Duration::ZERO,
+            &[FrameDamage::new(0, 0, 1_920, 1_080)],
+        );
+    }
+
+    assert!(
+        captures
+            .refresh_due(Duration::from_millis(34), CaptureOpportunity::InputPending,)
+            .is_empty()
+    );
+    assert_eq!(
+        captures.refresh_due(Duration::from_millis(34), CaptureOpportunity::InputDrained,),
+        vec![
+            CaptureEffect::RequestFrame {
+                window: window("selected"),
+                layout: constraints()
+                    .negotiate()
+                    .expect("SHM constraints are valid"),
+            },
+            CaptureEffect::RequestFrame {
+                window: window("background-a"),
+                layout: constraints()
+                    .negotiate()
+                    .expect("SHM constraints are valid"),
+            },
+        ]
+    );
+    assert_eq!(
+        captures.refresh_due(Duration::from_millis(34), CaptureOpportunity::InputDrained,),
+        vec![CaptureEffect::RequestFrame {
+            window: window("background-b"),
+            layout: constraints()
+                .negotiate()
+                .expect("SHM constraints are valid"),
+        }]
+    );
+    assert_eq!(
+        captures.refresh_due(Duration::from_millis(34), CaptureOpportunity::InputDrained,),
+        vec![CaptureEffect::RequestFrame {
+            window: window("background-c"),
+            layout: constraints()
+                .negotiate()
+                .expect("SHM constraints are valid"),
+        }]
+    );
+}
+
+#[test]
+fn ten_window_overload_remains_fair_and_recovers_without_duplicate_requests() {
+    let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+    let windows = (0..10)
+        .map(|index| window(&format!("window-{index}")))
+        .collect::<Vec<_>>();
+    captures.set_visible(windows.clone());
+    captures.set_selected(Some(windows[5].clone()));
+    for window in &windows {
+        captures.initialized(window, &constraints());
+    }
+    request_every_due_frame(&mut captures, Duration::ZERO);
+    for window in &windows {
+        captures.frame_ready(
+            window,
+            Duration::ZERO,
+            &[FrameDamage::new(0, 0, 1_920, 1_080)],
+        );
+    }
+
+    let mut requested = Vec::new();
+    while captures.next_request_at().is_some() {
+        let effects =
+            captures.refresh_due(Duration::from_millis(34), CaptureOpportunity::InputDrained);
+        assert!(effects.len() <= 2);
+        requested.extend(effects.into_iter().map(|effect| match effect {
+            CaptureEffect::RequestFrame { window, .. } => window,
+            other => panic!("unexpected scheduling effect: {other:?}"),
+        }));
+    }
+
+    assert_eq!(requested.first(), Some(&windows[5]));
+    requested.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    let mut expected = windows;
+    expected.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+    assert_eq!(requested, expected);
+}
+
+#[test]
+fn idle_service_has_no_capture_deadline_or_capture_work() {
+    let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+
+    assert_eq!(captures.active_stream_count(), 0);
+    assert_eq!(captures.next_request_at(), None);
+    assert!(
+        captures
+            .refresh_due(Duration::MAX, CaptureOpportunity::InputDrained)
+            .is_empty()
+    );
+}
+
+#[test]
+fn unsolicited_frame_completion_does_not_create_capture_work() {
+    let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+    captures.set_visible([window("visible")]);
+    captures.initialized(&window("visible"), &constraints());
+
+    assert!(
+        captures
+            .frame_ready(
+                &window("visible"),
+                Duration::ZERO,
+                &[FrameDamage::new(0, 0, 1_920, 1_080)],
+            )
+            .is_empty()
+    );
+    assert_eq!(captures.next_request_at(), Some(Duration::ZERO));
 }
 
 #[test]

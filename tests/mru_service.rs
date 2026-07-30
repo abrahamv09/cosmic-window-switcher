@@ -1,12 +1,38 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    Locale, MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId,
-    WindowScope, WorkspaceEligibilityState,
+    CaptureBackend, CaptureBackendSelection, DmaBufFallbackReason, Locale, MruHistoryAccuracy,
+    ServiceDiagnostics, SwitcherService, WindowEvent, WindowId, WindowScope,
+    WorkspaceEligibilityState,
 };
 
 fn window(id: &str) -> WindowId {
     WindowId::from(id)
+}
+
+#[test]
+fn status_reports_the_active_capture_backend_and_privacy_safe_fallback_reason() {
+    let mut service = SwitcherService::new();
+    service.set_capture_backend(CaptureBackendSelection::shared_memory(
+        DmaBufFallbackReason::ImportFailed,
+    ));
+    service.observe(WindowEvent::Discovered(window("opaque-window")));
+
+    let diagnostics = service.diagnostics();
+    let status = diagnostics.to_string();
+
+    assert_eq!(
+        diagnostics.capture_backend.backend(),
+        CaptureBackend::SharedMemory
+    );
+    assert_eq!(
+        diagnostics.capture_backend.fallback_reason(),
+        Some(DmaBufFallbackReason::ImportFailed)
+    );
+    assert!(status.contains("capture_backend: shared-memory"));
+    assert!(status.contains("capture_backend_fallback: DMA-BUF renderer import failed"));
+    assert!(!status.contains("Window title"));
+    assert!(!status.contains("pixel"));
 }
 
 #[test]
@@ -27,6 +53,7 @@ fn observed_focus_sequence_produces_current_first_mru_order() {
             mru_order: vec![window("gamma"), window("beta"), window("alpha")],
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
+            capture_backend: CaptureBackendSelection::default(),
         }
     );
 }
@@ -64,6 +91,7 @@ fn closed_windows_disappear_without_reordering_survivors() {
             mru_order: vec![window("gamma"), window("alpha")],
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
+            capture_backend: CaptureBackendSelection::default(),
         }
     );
 }
@@ -89,6 +117,7 @@ fn restart_reports_warm_up_with_current_first_and_stable_discovery_order() {
             ],
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
+            capture_backend: CaptureBackendSelection::default(),
         }
     );
 }
@@ -112,6 +141,7 @@ fn reused_identity_does_not_inherit_the_closed_windows_recency() {
             mru_order: vec![window("survivor"), window("reused")],
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
+            capture_backend: CaptureBackendSelection::default(),
         }
     );
 }
@@ -132,6 +162,7 @@ fn newly_discovered_window_gets_deterministic_placement_without_losing_accuracy(
             mru_order: vec![window("current"), window("new-background-window")],
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
+            capture_backend: CaptureBackendSelection::default(),
         }
     );
 }
@@ -145,11 +176,12 @@ fn status_diagnostics_report_mru_warm_up_without_window_titles() {
         workspace_eligibility: WorkspaceEligibilityState::MissingToplevelMembership {
             advertised_version: 3,
         },
+        capture_backend: CaptureBackendSelection::default(),
     };
 
     assert_eq!(
         diagnostics.to_string(),
-        "service: running\nmru_history: warm-up\nwindow_count: 2\nwindow_scope: all-workspaces\nworkspace_filtering: not-required\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot\nmru_order:\n  1. opaque-a\n  2. opaque-b"
+        "service: running\ncapture_backend: shared-memory\ncapture_backend_fallback: DMA-BUF renderer import failed\nmru_history: warm-up\nwindow_count: 2\nwindow_scope: all-workspaces\nworkspace_filtering: not-required\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot\nmru_order:\n  1. opaque-a\n  2. opaque-b"
     );
 }
 
@@ -160,6 +192,7 @@ fn status_diagnostics_are_available_in_spanish() {
         mru_order: vec![window("opaque-a")],
         window_scope: WindowScope::AllWorkspaces,
         workspace_eligibility: WorkspaceEligibilityState::Ready,
+        capture_backend: CaptureBackendSelection::default(),
     };
 
     let localized = diagnostics.localized(Locale::Spanish);
@@ -180,6 +213,7 @@ fn status_diagnostics_report_missing_or_incompatible_workspace_protocols() {
             advertised_version: None,
             required_version: 3,
         },
+        capture_backend: CaptureBackendSelection::default(),
     };
     let incompatible = ServiceDiagnostics {
         mru_history: MruHistoryAccuracy::Accurate,
@@ -189,6 +223,7 @@ fn status_diagnostics_report_missing_or_incompatible_workspace_protocols() {
             advertised_version: Some(0),
             required_version: 1,
         },
+        capture_backend: CaptureBackendSelection::default(),
     };
 
     assert!(missing.to_string().contains(

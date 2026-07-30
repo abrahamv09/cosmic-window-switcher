@@ -66,6 +66,14 @@ impl InvocationQueue {
     fn wake_fd(&self) -> BorrowedFd<'_> {
         self.wake.as_fd()
     }
+
+    fn has_pending(&self) -> bool {
+        let directions = self
+            .directions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        !directions.is_empty()
+    }
 }
 
 const BUS_NAME: &str = "io.github.abrahamv09.CosmicWindowSwitcher";

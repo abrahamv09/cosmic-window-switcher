@@ -54,13 +54,13 @@ use wayland_protocols::wp::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, AccessibilityPolicy, CaptureEffect, CaptureFailure, CaptureSessionModel,
-    DesktopSnapshot, FractionalScale, GridLayout, HoldModifiers, InvocationDirection,
-    InvocationRequest, Locale, OverlayPresentation, PreferencesStore, REVEAL_ANIMATION_DURATION,
-    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences,
-    ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent,
-    WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot,
-    WorkspaceId, WorkspaceSnapshot,
+    APPLICATION_ID, AccessibilityPolicy, CaptureEffect, CaptureFailure, CaptureOpportunity,
+    CaptureSessionModel, DesktopSnapshot, FractionalScale, GridLayout, HoldModifiers,
+    InvocationDirection, InvocationRequest, Locale, OverlayPresentation, PreferencesStore,
+    REVEAL_ANIMATION_DURATION, RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay,
+    SessionPreferences, ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent,
+    WindowEvent, WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState,
+    WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 use super::{
@@ -168,8 +168,7 @@ impl WindowObserver {
         service: SharedService,
         pending_invocations: PendingInvocations,
     ) -> Result<Self> {
-        let connection =
-            Connection::connect_to_env().context("connect to the Wayland compositor")?;
+        let connection = Connection::connect_to_env().context("connect to Wayland")?;
         let (globals, event_queue) =
             registry_queue_init(&connection).context("read Wayland globals")?;
         let queue_handle = event_queue.handle();
@@ -261,8 +260,8 @@ impl WindowObserver {
             reveal_at: None,
             readiness_deadline: None,
             reveal_animation: RevealAnimation::default(),
+            thumbnail_render: ThumbnailRender::default(),
         };
-
         Ok(Self {
             connection,
             event_queue,
@@ -304,7 +303,13 @@ impl WindowObserver {
         self.event_queue
             .dispatch_pending(&mut self.state)
             .context("dispatch pending COSMIC Window events")?;
-        self.state.handle_capture_deadline();
+        self.state.flush_thumbnail_render();
+        self.state
+            .handle_capture_deadline(if self.pending_invocations.has_pending() {
+                CaptureOpportunity::InputPending
+            } else {
+                CaptureOpportunity::InputDrained
+            });
         self.connection
             .flush()
             .context("flush the COSMIC compositor connection")?;
@@ -337,11 +342,17 @@ impl WindowObserver {
         self.event_queue
             .dispatch_pending(&mut self.state)
             .context("observe COSMIC Window events")?;
+        self.state.flush_thumbnail_render();
         self.state
             .start_pending_invocation(&self.pending_invocations, &queue_handle);
         self.state.handle_reveal_deadline();
         self.state.handle_animation_deadline();
-        self.state.handle_capture_deadline();
+        self.state
+            .handle_capture_deadline(if self.pending_invocations.has_pending() {
+                CaptureOpportunity::InputPending
+            } else {
+                CaptureOpportunity::InputDrained
+            });
         Ok(())
     }
 }
@@ -381,6 +392,13 @@ struct InteractionState {
 struct RevealAnimation {
     started_at: Option<Instant>,
     next_frame_at: Option<Instant>,
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum ThumbnailRender {
+    #[default]
+    Current,
+    Pending,
 }
 
 struct ProtocolObserver {
@@ -434,6 +452,7 @@ struct ProtocolObserver {
     reveal_at: Option<Instant>,
     readiness_deadline: Option<Instant>,
     reveal_animation: RevealAnimation,
+    thumbnail_render: ThumbnailRender,
 }
 
 impl ProtocolObserver {
@@ -624,8 +643,10 @@ impl ProtocolObserver {
             .min()
     }
 
-    fn handle_capture_deadline(&mut self) {
-        let effects = self.capture_model.refresh_due(self.capture_clock.elapsed());
+    fn handle_capture_deadline(&mut self, opportunity: CaptureOpportunity) {
+        let effects = self
+            .capture_model
+            .refresh_due(self.capture_clock.elapsed(), opportunity);
         if let Err(error) = self.apply_capture_effects(effects) {
             self.fail_overlay("request refreshed Live Thumbnail failed", &error);
         }
@@ -827,6 +848,7 @@ impl ProtocolObserver {
         self.reveal_at = None;
         self.readiness_deadline = None;
         self.reveal_animation = RevealAnimation::default();
+        self.thumbnail_render = ThumbnailRender::Current;
     }
 
     fn observed_window(&self, id: &WindowId) -> Option<&ObservedWindow> {
@@ -1197,7 +1219,19 @@ impl ProtocolObserver {
             scale,
             presentation,
         )?;
-        self.install_rendered_grid(rendered)
+        self.install_rendered_grid(rendered)?;
+        self.thumbnail_render = ThumbnailRender::Current;
+        Ok(())
+    }
+
+    fn flush_thumbnail_render(&mut self) {
+        if self.thumbnail_render != ThumbnailRender::Pending {
+            return;
+        }
+        self.thumbnail_render = ThumbnailRender::Current;
+        if let Err(error) = self.render_grid() {
+            eprintln!("render coalesced Live Thumbnail updates failed: {error:#}");
+        }
     }
 
     fn install_rendered_grid(&mut self, rendered: RenderedOverlay) -> Result<()> {
@@ -1781,8 +1815,8 @@ impl ShmCaptureHandler for ProtocolObserver {
             .grid
             .as_mut()
             .is_some_and(|grid| grid.update_thumbnail(&window, completed.thumbnail));
-        if changed && let Err(error) = self.render_grid() {
-            eprintln!("render Live Thumbnail for Window {window} failed: {error:#}");
+        if changed {
+            self.thumbnail_render = ThumbnailRender::Pending;
         }
     }
 
@@ -2275,6 +2309,7 @@ mod tests {
                 mru_order: vec![WindowId::from("activated"), WindowId::from("delayed")],
                 window_scope: WindowScope::AllWorkspaces,
                 workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
+                capture_backend: cosmic_window_switcher::CaptureBackendSelection::default(),
             }
         );
     }

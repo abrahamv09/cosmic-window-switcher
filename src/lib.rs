@@ -15,9 +15,10 @@ pub use accessibility::{
     AccessibilityPolicy, AccessibleSwitcherItem, OverlayPresentation, REVEAL_ANIMATION_DURATION,
 };
 pub use capture::{
-    BufferTransform, CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage,
-    InvalidThumbnailFrame, RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout,
-    ThumbnailFrame,
+    BufferTransform, CaptureBackend, CaptureBackendSelection, CaptureEffect, CaptureFailure,
+    CaptureOpportunity, CaptureSessionModel, DmaBufCompatibility, DmaBufContractStatus,
+    DmaBufFallbackReason, FrameDamage, InvalidThumbnailFrame, RefreshCeiling, ShmConstraints,
+    ShmFormat, ShmFrameLayout, ThumbnailFrame,
 };
 pub use localization::{Locale, StringKey};
 pub use preferences::{
@@ -1236,6 +1237,7 @@ pub struct ServiceDiagnostics {
     pub mru_order: Vec<WindowId>,
     pub window_scope: WindowScope,
     pub workspace_eligibility: WorkspaceEligibilityState,
+    pub capture_backend: CaptureBackendSelection,
 }
 
 impl ServiceDiagnostics {
@@ -1255,6 +1257,14 @@ impl ServiceDiagnostics {
         };
         let mut lines = vec![
             localized_status(locale, StringKey::Service, StringKey::Running),
+            localized_status(
+                locale,
+                StringKey::CaptureBackend,
+                match self.capture_backend.backend() {
+                    CaptureBackend::DmaBuf => StringKey::DmaBuf,
+                    CaptureBackend::SharedMemory => StringKey::SharedMemory,
+                },
+            ),
             localized_status(locale, StringKey::MruHistory, mru_history),
             format!(
                 "{}: {}",
@@ -1264,6 +1274,34 @@ impl ServiceDiagnostics {
             localized_status(locale, StringKey::WindowScope, window_scope),
             localized_status(locale, StringKey::WorkspaceFiltering, workspace_filtering),
         ];
+        if let Some(reason) = self.capture_backend.fallback_reason() {
+            lines.insert(
+                2,
+                localized_status(
+                    locale,
+                    StringKey::CaptureBackendFallback,
+                    match reason {
+                        DmaBufFallbackReason::IncompatibleDevice => {
+                            StringKey::IncompatibleDmaBufDevice
+                        }
+                        DmaBufFallbackReason::UnsupportedFormat => {
+                            StringKey::UnsupportedDmaBufFormat
+                        }
+                        DmaBufFallbackReason::UnsupportedModifier => {
+                            StringKey::UnsupportedDmaBufModifier
+                        }
+                        DmaBufFallbackReason::AllocationFailed => StringKey::DmaBufAllocationFailed,
+                        DmaBufFallbackReason::SynchronizationUnavailable => {
+                            StringKey::DmaBufSynchronizationUnavailable
+                        }
+                        DmaBufFallbackReason::ImportFailed => StringKey::DmaBufImportFailed,
+                        DmaBufFallbackReason::ReleaseUnavailable => {
+                            StringKey::DmaBufReleaseUnavailable
+                        }
+                    },
+                ),
+            );
+        }
         lines.extend(localized_workspace_eligibility(
             locale,
             self.workspace_eligibility,
@@ -1472,6 +1510,7 @@ pub struct SwitcherService {
     active_session: Option<ActiveSession>,
     window_scope: WindowScope,
     workspace_eligibility: WorkspaceEligibilityState,
+    capture_backend: CaptureBackendSelection,
 }
 
 impl SwitcherService {
@@ -1483,6 +1522,9 @@ impl SwitcherService {
             active_session: None,
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
+            capture_backend: CaptureBackendSelection::shared_memory(
+                DmaBufFallbackReason::ImportFailed,
+            ),
         }
     }
 
@@ -1496,6 +1538,10 @@ impl SwitcherService {
 
     pub const fn set_window_scope(&mut self, scope: WindowScope) {
         self.window_scope = scope;
+    }
+
+    pub const fn set_capture_backend(&mut self, selection: CaptureBackendSelection) {
+        self.capture_backend = selection;
     }
 
     #[must_use]
@@ -1697,6 +1743,7 @@ impl SwitcherService {
                 .collect(),
             window_scope: self.window_scope,
             workspace_eligibility: self.workspace_eligibility,
+            capture_backend: self.capture_backend,
         }
     }
 }
