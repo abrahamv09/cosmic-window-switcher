@@ -88,7 +88,7 @@ pub struct InvocationRequest {
     pub initial_hold_modifiers: HoldModifiers,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServiceEvent {
     SessionReady,
     SessionReadinessFailed,
@@ -96,6 +96,9 @@ pub enum ServiceEvent {
     HoldModifiersChanged(HoldModifiers),
     Switching(SwitchingEvent),
     Invocation(InvocationDirection),
+    PointerEntered(Option<WindowId>),
+    PointerMoved(Option<WindowId>),
+    PointerPressed(Option<WindowId>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -225,6 +228,41 @@ impl SwitchingSession {
             InvocationDirection::Previous => self.selected - 1,
         };
         SessionEffect::SelectionChanged(self.selected().clone())
+    }
+
+    fn select_window(&mut self, window: &WindowId) -> SessionEffect {
+        if self.state == SessionState::Finished {
+            return SessionEffect::None;
+        }
+        let Some(selected) = self
+            .windows
+            .iter()
+            .position(|candidate| candidate == window)
+        else {
+            return SessionEffect::None;
+        };
+        if selected == self.selected {
+            return SessionEffect::None;
+        }
+        self.selected = selected;
+        SessionEffect::SelectionChanged(window.clone())
+    }
+
+    fn contains(&self, window: &WindowId) -> bool {
+        self.windows.contains(window)
+    }
+
+    fn activate_window(&mut self, window: &WindowId) -> SessionEffect {
+        if self.state == SessionState::Finished || !self.contains(window) {
+            return SessionEffect::None;
+        }
+        self.selected = self
+            .windows
+            .iter()
+            .position(|candidate| candidate == window)
+            .expect("the checked Window belongs to the Switching Session");
+        self.state = SessionState::Finished;
+        SessionEffect::Activate(window.clone())
     }
 
     fn window_closed(&mut self, window: &WindowId) -> SessionEffect {
@@ -422,6 +460,135 @@ impl fmt::Display for UnknownGridSelection {
 
 impl Error for UnknownGridSelection {}
 
+const GRID_ITEM_GAP: u32 = 12;
+const GRID_PADDING: u32 = 16;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum CardSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl CardSize {
+    #[must_use]
+    pub const fn logical_size(self) -> (u32, u32) {
+        match self {
+            Self::Small => (240, 180),
+            Self::Medium => (320, 240),
+            Self::Large => (400, 300),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridRect {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl GridRect {
+    #[must_use]
+    pub const fn x(self) -> u32 {
+        self.x
+    }
+
+    #[must_use]
+    pub const fn y(self) -> u32 {
+        self.y
+    }
+
+    #[must_use]
+    pub const fn size(self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GridLayout {
+    columns: usize,
+    total_rows: usize,
+    visible_rows: usize,
+    visible_item_range: Range<usize>,
+    logical_size: (u32, u32),
+    card_size: (u32, u32),
+    origin: (u32, u32),
+}
+
+impl GridLayout {
+    #[must_use]
+    pub const fn columns(&self) -> usize {
+        self.columns
+    }
+
+    #[must_use]
+    pub const fn total_rows(&self) -> usize {
+        self.total_rows
+    }
+
+    #[must_use]
+    pub const fn visible_rows(&self) -> usize {
+        self.visible_rows
+    }
+
+    #[must_use]
+    pub fn visible_item_range(&self) -> Range<usize> {
+        self.visible_item_range.clone()
+    }
+
+    #[must_use]
+    pub const fn logical_size(&self) -> (u32, u32) {
+        self.logical_size
+    }
+
+    #[must_use]
+    pub fn centered_in(mut self, logical_width: u32, logical_height: u32) -> Self {
+        self.origin = (
+            logical_width.saturating_sub(self.logical_size.0) / 2,
+            logical_height.saturating_sub(self.logical_size.1) / 2,
+        );
+        self
+    }
+
+    #[must_use]
+    pub fn item_bounds(&self, item_index: usize) -> Option<GridRect> {
+        if !self.visible_item_range.contains(&item_index) {
+            return None;
+        }
+        let visible_index = item_index - self.visible_item_range.start;
+        let column = visible_index % self.columns;
+        let row = visible_index / self.columns;
+        let (width, height) = self.card_size;
+        Some(GridRect {
+            x: self.origin.0
+                + GRID_PADDING
+                + u32::try_from(column).ok()? * (width.saturating_add(GRID_ITEM_GAP)),
+            y: self.origin.1
+                + GRID_PADDING
+                + u32::try_from(row).ok()? * (height.saturating_add(GRID_ITEM_GAP)),
+            width,
+            height,
+        })
+    }
+
+    #[must_use]
+    pub fn item_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.visible_item_range.clone().find(|item_index| {
+            self.item_bounds(*item_index).is_some_and(|bounds| {
+                let right = bounds.x.saturating_add(bounds.width);
+                let bottom = bounds.y.saturating_add(bounds.height);
+                x >= f64::from(bounds.x)
+                    && x < f64::from(right)
+                    && y >= f64::from(bounds.y)
+                    && y < f64::from(bottom)
+            })
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwitcherGrid {
     session_display: SessionDisplay,
@@ -500,6 +667,55 @@ impl SwitcherGrid {
         let first_item = self.first_visible_row * columns;
         let last_item = (first_item + visible_rows * columns).min(self.items.len());
         first_item..last_item
+    }
+
+    #[must_use]
+    pub fn layout(
+        &mut self,
+        maximum_logical_width: u32,
+        maximum_logical_height: u32,
+        card_size: CardSize,
+    ) -> GridLayout {
+        let (card_width, card_height) = card_size.logical_size();
+        let available_width =
+            maximum_logical_width.max(card_width.saturating_add(2 * GRID_PADDING));
+        let columns = ((available_width - 2 * GRID_PADDING + GRID_ITEM_GAP)
+            / (card_width + GRID_ITEM_GAP))
+            .max(1);
+        let item_count = self.items.len();
+        let columns = usize::try_from(columns)
+            .unwrap_or(usize::MAX)
+            .min(item_count.max(1));
+        let total_rows = item_count.div_ceil(columns);
+        let available_height =
+            maximum_logical_height.max(card_height.saturating_add(2 * GRID_PADDING));
+        let maximum_visible_rows = ((available_height - 2 * GRID_PADDING + GRID_ITEM_GAP)
+            / (card_height + GRID_ITEM_GAP))
+            .max(1);
+        let visible_rows = total_rows
+            .min(usize::try_from(maximum_visible_rows).unwrap_or(usize::MAX))
+            .max(usize::from(!self.items.is_empty()));
+        let visible_item_range = self.visible_item_range(columns, visible_rows);
+        let columns_u32 = u32::try_from(columns).unwrap_or(u32::MAX);
+        let visible_rows_u32 = u32::try_from(visible_rows).unwrap_or(u32::MAX);
+        let logical_width = 2 * GRID_PADDING
+            + columns_u32.saturating_mul(card_width)
+            + columns_u32.saturating_sub(1).saturating_mul(GRID_ITEM_GAP);
+        let logical_height = 2 * GRID_PADDING
+            + visible_rows_u32.saturating_mul(card_height)
+            + visible_rows_u32
+                .saturating_sub(1)
+                .saturating_mul(GRID_ITEM_GAP);
+
+        GridLayout {
+            columns,
+            total_rows,
+            visible_rows,
+            visible_item_range,
+            logical_size: (logical_width, logical_height),
+            card_size: (card_width, card_height),
+            origin: (0, 0),
+        }
     }
 
     /// Changes the selected item without changing MRU Order.
@@ -1015,6 +1231,31 @@ impl SwitcherService {
                 }
                 effects
             }
+            ServiceEvent::PointerMoved(Some(window)) if active_session.revealed => {
+                let effect = active_session.session.select_window(&window);
+                let (effects, finished) = active_session.translate_session_effect(effect);
+                if finished {
+                    self.active_session = None;
+                }
+                effects
+            }
+            ServiceEvent::PointerPressed(Some(window))
+                if active_session.revealed && active_session.session.contains(&window) =>
+            {
+                let effect = active_session.session.activate_window(&window);
+                let (effects, finished) = active_session.translate_session_effect(effect);
+                if finished {
+                    self.active_session = None;
+                }
+                effects
+            }
+            ServiceEvent::PointerPressed(None) if active_session.revealed => {
+                self.active_session = None;
+                vec![ServiceEffect::Cancel]
+            }
+            ServiceEvent::PointerEntered(_)
+            | ServiceEvent::PointerMoved(_)
+            | ServiceEvent::PointerPressed(_) => Vec::new(),
         }
     }
 

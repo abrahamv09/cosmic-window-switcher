@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    HoldModifiers, InvocationDirection, InvocationRequest, ServiceEffect, ServiceEvent,
+    CaptureSessionModel, CardSize, HoldModifiers, InvocationDirection, InvocationRequest,
+    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SwitcherGrid, SwitcherItem,
     SwitcherService, WindowEvent, WindowId,
 };
 
@@ -16,6 +17,24 @@ fn service_with_mru_order(ids: &[&str]) -> SwitcherService {
         service.observe(WindowEvent::Activated(window(id)));
     }
     service
+}
+
+fn synchronize_capture_viewport(
+    grid: &mut SwitcherGrid,
+    captures: &mut CaptureSessionModel,
+    effects: Vec<ServiceEffect>,
+) {
+    for effect in effects {
+        if let ServiceEffect::SelectionChanged(selected) = effect {
+            grid.select(&selected)
+                .expect("the service selection belongs to the Switcher Grid");
+        }
+    }
+    let layout = grid.layout(760, 548, CardSize::Medium);
+    let visible_windows = grid.items()[layout.visible_item_range()]
+        .iter()
+        .map(|item| item.window().clone());
+    captures.set_visible(visible_windows);
 }
 
 #[test]
@@ -229,5 +248,101 @@ fn prepared_session_uses_the_window_set_captured_with_the_invocation_request() {
     assert_eq!(
         service.handle(ServiceEvent::Invocation(InvocationDirection::Previous)),
         vec![ServiceEffect::SelectionChanged(window("focused"))]
+    );
+}
+
+#[test]
+fn pointer_entry_is_inert_until_motion_then_hover_selects_and_press_activates() {
+    let mut service = service_with_mru_order(&["focused", "previous", "least-recent"]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::empty(),
+    });
+    service.handle(ServiceEvent::SessionReady);
+    service.handle(ServiceEvent::RevealDelayElapsed);
+
+    assert_eq!(
+        service.handle(ServiceEvent::PointerEntered(Some(window("least-recent")))),
+        Vec::<ServiceEffect>::new()
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::PointerMoved(Some(window("least-recent")))),
+        vec![ServiceEffect::SelectionChanged(window("least-recent"))]
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::PointerPressed(Some(window("least-recent")))),
+        vec![ServiceEffect::Activate(window("least-recent"))]
+    );
+}
+
+#[test]
+fn pointer_press_outside_the_revealed_grid_cancels_without_activation() {
+    let mut service = service_with_mru_order(&["focused", "previous"]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::empty(),
+    });
+
+    assert_eq!(
+        service.handle(ServiceEvent::PointerPressed(None)),
+        Vec::<ServiceEffect>::new()
+    );
+    service.handle(ServiceEvent::SessionReady);
+    service.handle(ServiceEvent::RevealDelayElapsed);
+
+    assert_eq!(
+        service.handle(ServiceEvent::PointerPressed(None)),
+        vec![ServiceEffect::Cancel]
+    );
+}
+
+#[test]
+fn keyboard_navigation_suspends_offscreen_capture_and_resumes_rows_when_revealed() {
+    let ids = (0..8)
+        .map(|index| format!("window-{index}"))
+        .collect::<Vec<_>>();
+    let id_refs = ids.iter().map(String::as_str).collect::<Vec<_>>();
+    let mut service = service_with_mru_order(&id_refs);
+    let mut grid = SwitcherGrid::new(
+        SessionDisplay::from("eDP-1"),
+        ids.iter().map(|id| {
+            SwitcherItem::new(window(id), "com.example.Application".to_owned(), id.clone())
+        }),
+        &window("window-1"),
+    )
+    .expect("the Initial Selection belongs to the Switcher Grid");
+    let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::ALT,
+    });
+    synchronize_capture_viewport(&mut grid, &mut captures, Vec::new());
+
+    for _ in 0..5 {
+        let effects = service.handle(ServiceEvent::Invocation(InvocationDirection::Next));
+        synchronize_capture_viewport(&mut grid, &mut captures, effects);
+    }
+
+    assert_eq!(
+        grid.items()
+            .iter()
+            .filter(|item| captures.is_active(item.window()))
+            .map(|item| item.window().as_str())
+            .collect::<Vec<_>>(),
+        ["window-4", "window-5", "window-6", "window-7"]
+    );
+
+    for _ in 0..5 {
+        let effects = service.handle(ServiceEvent::Invocation(InvocationDirection::Previous));
+        synchronize_capture_viewport(&mut grid, &mut captures, effects);
+    }
+
+    assert_eq!(
+        grid.items()
+            .iter()
+            .filter(|item| captures.is_active(item.window()))
+            .map(|item| item.window().as_str())
+            .collect::<Vec<_>>(),
+        ["window-0", "window-1", "window-2", "window-3"]
     );
 }

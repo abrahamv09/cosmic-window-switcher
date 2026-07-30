@@ -13,19 +13,20 @@ use cosmic_protocols::toplevel_info::v1::client::{
 use cosmic_protocols::toplevel_management::v1::client::zcosmic_toplevel_manager_v1;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
-    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers},
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
     },
     shell::{
         WaylandSurface,
         wlr_layer::{
-            KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
             LayerSurfaceConfigure,
         },
     },
@@ -34,7 +35,7 @@ use smithay_client_toolkit::{
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop,
     globals::registry_queue_init,
-    protocol::{wl_buffer, wl_keyboard, wl_output, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
@@ -47,7 +48,7 @@ use wayland_protocols::ext::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, HoldModifiers,
+    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, GridLayout, HoldModifiers,
     InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
     SessionDisplay, ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent,
     WindowEvent, WindowId,
@@ -134,11 +135,13 @@ impl WindowObserver {
             grid_pool: None,
             grid_buffer: None,
             grid_dimensions: None,
+            grid_layout: None,
             grid: None,
             session_window_order: Vec::new(),
             session_output: None,
             interaction: InteractionState::default(),
             keyboard: None,
+            pointer: None,
             seat: None,
             pending_direction: None,
             initial_hold_modifiers: None,
@@ -265,11 +268,13 @@ struct ProtocolObserver {
     grid_pool: Option<RawPool>,
     grid_buffer: Option<wl_buffer::WlBuffer>,
     grid_dimensions: Option<OverlayDimensions>,
+    grid_layout: Option<GridLayout>,
     grid: Option<SwitcherGrid>,
     session_window_order: Vec<WindowId>,
     session_output: Option<wl_output::WlOutput>,
     interaction: InteractionState,
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    pointer: Option<wl_pointer::WlPointer>,
     seat: Option<wl_seat::WlSeat>,
     pending_direction: Option<InvocationDirection>,
     initial_hold_modifiers: Option<HoldModifiers>,
@@ -368,8 +373,9 @@ impl ProtocolObserver {
             Some(APPLICATION_ID),
             Some(&session_output),
         );
+        layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-        layer.set_size(1, 1);
+        layer.set_size(0, 0);
         layer.commit();
         self.layer = Some(layer);
         self.session_window_order = mru_order;
@@ -476,6 +482,24 @@ impl ProtocolObserver {
         self.apply_effects(effects);
     }
 
+    fn window_at_pointer(&self, position: (f64, f64)) -> Option<WindowId> {
+        let item_index = self.grid_layout.as_ref()?.item_at(position.0, position.1)?;
+        self.grid
+            .as_ref()?
+            .items()
+            .get(item_index)
+            .map(|item| item.window().clone())
+    }
+
+    fn handle_pointer_event(&mut self, event: ServiceEvent) {
+        let effects = self
+            .service
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .handle(event);
+        self.apply_effects(effects);
+    }
+
     fn apply_effects(&mut self, effects: Vec<ServiceEffect>) {
         for effect in effects {
             match effect {
@@ -549,6 +573,7 @@ impl ProtocolObserver {
         self.readiness_pool = None;
         self.grid_pool = None;
         self.grid_dimensions = None;
+        self.grid_layout = None;
         self.grid = None;
         self.accessibility.hide();
         self.session_window_order.clear();
@@ -685,20 +710,20 @@ impl ProtocolObserver {
             .output_state
             .info(output)
             .context("the Session Display has no output information")?;
-        let maximum_width = output_info
+        let surface_width = output_info
             .logical_size
             .and_then(|(width, _)| u32::try_from(width).ok())
-            .map_or(1_200, |width| width.saturating_mul(4) / 5);
-        let maximum_height = output_info
+            .unwrap_or(1_200);
+        let surface_height = output_info
             .logical_size
             .and_then(|(_, height)| u32::try_from(height).ok())
-            .map_or(800, |height| height.saturating_mul(4) / 5);
+            .unwrap_or(800);
         let rendered = self.overlay_renderer.render(
             self.grid
                 .as_mut()
                 .context("the Switching Session has no Switcher Grid")?,
-            maximum_width,
-            maximum_height,
+            surface_width,
+            surface_height,
             output_info.scale_factor,
         )?;
         self.install_rendered_grid(rendered)
@@ -709,6 +734,7 @@ impl ProtocolObserver {
             dimensions,
             pixels,
             visible_windows,
+            layout,
         } = rendered;
         let mut pool = RawPool::new(pixels.len(), &self.shm)
             .context("allocate shared memory for the Switcher Grid")?;
@@ -739,6 +765,7 @@ impl ProtocolObserver {
         }
         self.grid_pool = Some(pool);
         self.grid_dimensions = Some(dimensions);
+        self.grid_layout = Some(layout);
         let selected = self
             .grid
             .as_ref()
@@ -960,6 +987,11 @@ impl SeatHandler for ProtocolObserver {
                     }
                 }
             }
+        } else if capability == Capability::Pointer
+            && self.pointer.is_none()
+            && let Ok(pointer) = self.seat_state.get_pointer(queue_handle, &seat)
+        {
+            self.pointer = Some(pointer);
         }
     }
 
@@ -978,6 +1010,10 @@ impl SeatHandler for ProtocolObserver {
             if let Some(direction) = self.pending_direction {
                 self.fallback(direction);
             }
+        } else if capability == Capability::Pointer
+            && let Some(pointer) = self.pointer.take()
+        {
+            pointer.release();
         }
     }
 
@@ -1109,6 +1145,46 @@ impl KeyboardHandler for ProtocolObserver {
         self.handle_switching_event(SwitchingEvent::HoldModifiersChanged(
             hold_modifiers_from_state(modifiers),
         ));
+    }
+}
+
+impl PointerHandler for ProtocolObserver {
+    fn pointer_frame(
+        &mut self,
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        const PRIMARY_BUTTON: u32 = 0x110;
+
+        for event in events {
+            if !self
+                .layer
+                .as_ref()
+                .is_some_and(|layer| layer.wl_surface() == &event.surface)
+            {
+                continue;
+            }
+            match event.kind {
+                PointerEventKind::Enter { .. } => {
+                    let window = self.window_at_pointer(event.position);
+                    self.handle_pointer_event(ServiceEvent::PointerEntered(window));
+                }
+                PointerEventKind::Motion { .. } => {
+                    let window = self.window_at_pointer(event.position);
+                    self.handle_pointer_event(ServiceEvent::PointerMoved(window));
+                }
+                PointerEventKind::Press { button, .. } if button == PRIMARY_BUTTON => {
+                    let window = self.window_at_pointer(event.position);
+                    self.handle_pointer_event(ServiceEvent::PointerPressed(window));
+                }
+                PointerEventKind::Leave { .. }
+                | PointerEventKind::Press { .. }
+                | PointerEventKind::Release { .. }
+                | PointerEventKind::Axis { .. } => {}
+            }
+        }
     }
 }
 
@@ -1534,6 +1610,7 @@ fn hold_modifiers_from_state(modifiers: Modifiers) -> HoldModifiers {
 
 delegate_compositor!(ProtocolObserver);
 delegate_keyboard!(ProtocolObserver);
+delegate_pointer!(ProtocolObserver);
 delegate_layer!(ProtocolObserver);
 delegate_output!(ProtocolObserver);
 delegate_registry!(ProtocolObserver);

@@ -2,14 +2,12 @@
 
 use anyhow::{Context, Result};
 use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
-use cosmic_window_switcher::{SwitcherGrid, SwitcherItem, ThumbnailFrame, WindowId};
+use cosmic_window_switcher::{
+    CardSize, GridLayout, GridRect, SwitcherGrid, SwitcherItem, ThumbnailFrame, WindowId,
+};
 
 use super::icons::{IconImage, IconResolver};
 
-const ITEM_WIDTH: u32 = 320;
-const ITEM_HEIGHT: u32 = 240;
-const ITEM_GAP: u32 = 12;
-const GRID_PADDING: u32 = 16;
 const ICON_SIZE: u32 = 36;
 const THUMBNAIL_PADDING: u32 = 12;
 const THUMBNAIL_HEIGHT: u32 = 172;
@@ -18,6 +16,7 @@ pub(super) struct RenderedOverlay {
     pub(super) dimensions: OverlayDimensions,
     pub(super) pixels: Vec<u8>,
     pub(super) visible_windows: Vec<WindowId>,
+    pub(super) layout: GridLayout,
 }
 
 #[derive(Clone, Copy)]
@@ -45,32 +44,23 @@ impl OverlayRenderer {
     pub(super) fn render(
         &mut self,
         grid: &mut SwitcherGrid,
-        maximum_logical_width: u32,
-        maximum_logical_height: u32,
+        surface_logical_width: u32,
+        surface_logical_height: u32,
         scale: i32,
     ) -> Result<RenderedOverlay> {
         let scale = scale.max(1);
         let physical_scale = u32::try_from(scale).context("invalid output scale")?;
         let font_scale = f32::from(u16::try_from(scale).context("output scale is too large")?);
-        let item_count = u32::try_from(grid.items().len()).context("too many Switcher Items")?;
-        let available_width = maximum_logical_width.max(ITEM_WIDTH + 2 * GRID_PADDING);
-        let maximum_columns =
-            ((available_width - 2 * GRID_PADDING + ITEM_GAP) / (ITEM_WIDTH + ITEM_GAP)).max(1);
-        let columns = item_count.clamp(1, maximum_columns);
-        let rows = item_count.div_ceil(columns);
-        let available_height = maximum_logical_height.max(ITEM_HEIGHT + 2 * GRID_PADDING);
-        let maximum_rows =
-            ((available_height - 2 * GRID_PADDING + ITEM_GAP) / (ITEM_HEIGHT + ITEM_GAP)).max(1);
-        let visible_rows = rows.min(maximum_rows);
-        let visible_item_range = grid.visible_item_range(
-            usize::try_from(columns).context("too many Switcher Grid columns")?,
-            usize::try_from(visible_rows).context("too many visible Switcher Grid rows")?,
-        );
-        let logical_width =
-            2 * GRID_PADDING + columns * ITEM_WIDTH + columns.saturating_sub(1) * ITEM_GAP;
-        let logical_height = 2 * GRID_PADDING
-            + visible_rows * ITEM_HEIGHT
-            + visible_rows.saturating_sub(1) * ITEM_GAP;
+        let layout = grid
+            .layout(
+                surface_logical_width.saturating_mul(4) / 5,
+                surface_logical_height.saturating_mul(4) / 5,
+                CardSize::Medium,
+            )
+            .centered_in(surface_logical_width, surface_logical_height);
+        let visible_item_range = layout.visible_item_range();
+        let logical_width = surface_logical_width;
+        let logical_height = surface_logical_height;
         let physical_width = logical_width
             .checked_mul(physical_scale)
             .context("Switcher Grid width overflow")?;
@@ -98,13 +88,14 @@ impl OverlayRenderer {
             if !visible_item_range.contains(&index) {
                 continue;
             }
-            let visible_index = index - visible_item_range.start;
+            let bounds = layout
+                .item_bounds(index)
+                .context("visible Switcher Item has no layout bounds")?;
             self.draw_item(
                 &mut pixels,
                 physical_width,
                 item,
-                u32::try_from(visible_index).context("too many visible Switcher Items")?,
-                columns,
+                bounds,
                 (physical_scale, font_scale),
             );
         }
@@ -121,6 +112,7 @@ impl OverlayRenderer {
             },
             pixels: bytes,
             visible_windows,
+            layout,
         })
     }
 
@@ -130,20 +122,18 @@ impl OverlayRenderer {
         pixels: &mut [u32],
         surface_width: u32,
         item: &SwitcherItem,
-        index: u32,
-        columns: u32,
+        bounds: GridRect,
         scale: (u32, f32),
     ) {
         let (physical_scale, font_scale) = scale;
-        let column = index % columns;
-        let row = index / columns;
-        let x = (GRID_PADDING + column * (ITEM_WIDTH + ITEM_GAP)) * physical_scale;
-        let y = (GRID_PADDING + row * (ITEM_HEIGHT + ITEM_GAP)) * physical_scale;
+        let (item_width, item_height) = bounds.size();
+        let x = bounds.x() * physical_scale;
+        let y = bounds.y() * physical_scale;
         let item_rect = Rect::new(
             x,
             y,
-            ITEM_WIDTH * physical_scale,
-            ITEM_HEIGHT * physical_scale,
+            item_width * physical_scale,
+            item_height * physical_scale,
         );
         let item_color = if item.is_selected() {
             Color::rgb(38, 92, 150)
@@ -164,7 +154,7 @@ impl OverlayRenderer {
         let thumbnail_rect = Rect::new(
             x + THUMBNAIL_PADDING * physical_scale,
             y + THUMBNAIL_PADDING * physical_scale,
-            (ITEM_WIDTH - 2 * THUMBNAIL_PADDING) * physical_scale,
+            (item_width - 2 * THUMBNAIL_PADDING) * physical_scale,
             THUMBNAIL_HEIGHT * physical_scale,
         );
         fill_rect(
@@ -216,7 +206,7 @@ impl OverlayRenderer {
             item.title(),
             x + 64 * physical_scale,
             y + 197 * physical_scale,
-            (ITEM_WIDTH - 80) * physical_scale,
+            (item_width - 80) * physical_scale,
             28 * physical_scale,
             16.0 * font_scale,
             22.0 * font_scale,
