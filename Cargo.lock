@@ -217,6 +217,7 @@ dependencies = [
  "clap",
  "cosmic-client-toolkit",
  "cosmic-protocols",
+ "rustix",
  "smithay-client-toolkit",
  "wayland-client",
  "wayland-protocols",

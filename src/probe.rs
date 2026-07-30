@@ -50,7 +50,7 @@ use cosmic_window_switcher::{
 };
 
 pub fn run(include_titles: bool) -> Result<()> {
-    verify_cosmic_session()?;
+    crate::cosmic_session::verify("probe")?;
 
     let connection = Connection::connect_to_env().context("connect to the Wayland compositor")?;
     let (globals, mut event_queue) =
@@ -158,19 +158,6 @@ fn create_keyboard_overlay(
     layer.set_size(1, 1);
     layer.commit();
     layer
-}
-
-fn verify_cosmic_session() -> Result<()> {
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
-    let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
-    if !desktop
-        .split(':')
-        .any(|component| component.eq_ignore_ascii_case("COSMIC"))
-        || session_type != "wayland"
-    {
-        bail!("the probe requires a COSMIC Wayland session");
-    }
-    Ok(())
 }
 
 struct Probe {

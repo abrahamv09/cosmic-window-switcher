@@ -1,9 +1,11 @@
 # COSMIC Window Switcher
 
 COSMIC Window Switcher is a native Rust Window switcher for the COSMIC desktop.
-The current executable contains the ticket 1 integration probe: it proves
-Window discovery, memory-only shared-memory capture, exclusive keyboard input,
-and Window activation against a live COSMIC compositor.
+The current executable contains integration probes for Window switching and
+workspace-move capability verification. They exercise Window discovery,
+memory-only shared-memory capture, exclusive keyboard input, Window activation,
+workspace topology, and capability-gated workspace movement against a live
+COSMIC compositor.
 
 The stable application identity is
 `io.github.abrahamv09.CosmicWindowSwitcher`. The project is licensed under
@@ -54,3 +56,30 @@ capture fails; a capture failure is printed against that Window identity.
 
 The probe intentionally has no visible grid yet. It is a ticket 1 tracer bullet,
 not the finished switcher service.
+
+## Verify workspace-move capability
+
+First inventory the packaged compositor's advertised management protocol,
+capabilities, workspace topology, Window ids, workspace selectors, and output
+names:
+
+```sh
+cargo run --release -- probe-workspace-move
+```
+
+The inventory distinguishes a spanning workspace group from separate-display
+workspace groups. To move one test Window to another workspace, copy the opaque
+Window id and exact workspace selector from that output:
+
+```sh
+cargo run --release -- probe-workspace-move \
+  --window <window-id> \
+  --workspace <target-workspace-selector>
+```
+
+Add `--output <output-name>` if a target in a multi-output workspace group
+cannot be resolved from the Window's current output. The probe sends exactly
+one `move_to_ext_workspace` request only when the compositor advertises
+management protocol v4 or newer and capability 8. It then reads the resulting
+workspace membership back from COSMIC. Missing, ignored, or rejected
+capabilities fail clearly without trying the unadvertised legacy path.
