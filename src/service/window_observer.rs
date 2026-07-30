@@ -309,20 +309,9 @@ impl WindowObserver {
 
     pub(super) fn dispatch(&mut self) -> Result<()> {
         let queue_handle = self.event_queue.handle();
-        self.state
-            .start_pending_invocation(&self.pending_invocations, &queue_handle);
-        self.state.handle_reveal_deadline();
-        self.state.handle_animation_deadline();
         self.event_queue
             .dispatch_pending(&mut self.state)
             .context("dispatch pending COSMIC Window events")?;
-        self.state.flush_thumbnail_render();
-        self.state
-            .handle_capture_deadline(if self.pending_invocations.has_pending() {
-                CaptureOpportunity::InputPending
-            } else {
-                CaptureOpportunity::InputDrained
-            });
         self.connection
             .flush()
             .context("flush the COSMIC compositor connection")?;
@@ -355,11 +344,11 @@ impl WindowObserver {
         self.event_queue
             .dispatch_pending(&mut self.state)
             .context("observe COSMIC Window events")?;
-        self.state.flush_thumbnail_render();
         self.state
             .start_pending_invocation(&self.pending_invocations, &queue_handle);
         self.state.handle_reveal_deadline();
         self.state.handle_animation_deadline();
+        self.state.flush_thumbnail_render();
         self.state
             .handle_capture_deadline(if self.pending_invocations.has_pending() {
                 CaptureOpportunity::InputPending
@@ -650,7 +639,9 @@ impl ProtocolObserver {
             .capture_model
             .next_request_at()
             .map(|deadline| deadline.saturating_sub(self.capture_clock.elapsed()));
-        [overlay_timeout, capture_timeout]
+        let render_timeout =
+            (self.thumbnail_render == ThumbnailRender::Pending).then_some(Duration::ZERO);
+        [overlay_timeout, capture_timeout, render_timeout]
             .into_iter()
             .flatten()
             .min()

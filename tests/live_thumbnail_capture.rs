@@ -101,6 +101,10 @@ fn every_incompatible_dma_buf_stage_falls_back_to_shared_memory() {
 
         assert_eq!(selection.backend(), CaptureBackend::SharedMemory);
         assert_eq!(selection.fallback_reason(), Some(reason));
+        assert_eq!(
+            DmaBufFallbackReason::from_diagnostic_name(reason.diagnostic_name()),
+            Some(reason)
+        );
     }
 }
 

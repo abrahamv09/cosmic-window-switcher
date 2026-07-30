@@ -32,31 +32,32 @@ pub enum DmaBufFallbackReason {
 }
 
 impl DmaBufFallbackReason {
+    const DIAGNOSTIC_NAMES: [(Self, &'static str); 7] = [
+        (Self::IncompatibleDevice, "incompatible-device"),
+        (Self::UnsupportedFormat, "unsupported-format"),
+        (Self::UnsupportedModifier, "unsupported-modifier"),
+        (Self::AllocationFailed, "allocation-failed"),
+        (
+            Self::SynchronizationUnavailable,
+            "synchronization-unavailable",
+        ),
+        (Self::ImportUnavailable, "import-unavailable"),
+        (Self::ReleaseUnavailable, "release-unavailable"),
+    ];
+
     #[must_use]
-    pub const fn diagnostic_name(self) -> &'static str {
-        match self {
-            Self::IncompatibleDevice => "incompatible-device",
-            Self::UnsupportedFormat => "unsupported-format",
-            Self::UnsupportedModifier => "unsupported-modifier",
-            Self::AllocationFailed => "allocation-failed",
-            Self::SynchronizationUnavailable => "synchronization-unavailable",
-            Self::ImportUnavailable => "import-unavailable",
-            Self::ReleaseUnavailable => "release-unavailable",
-        }
+    pub fn diagnostic_name(self) -> &'static str {
+        Self::DIAGNOSTIC_NAMES
+            .iter()
+            .find_map(|(reason, name)| (*reason == self).then_some(*name))
+            .unwrap_or("unknown")
     }
 
     #[must_use]
     pub fn from_diagnostic_name(name: &str) -> Option<Self> {
-        match name {
-            "incompatible-device" => Some(Self::IncompatibleDevice),
-            "unsupported-format" => Some(Self::UnsupportedFormat),
-            "unsupported-modifier" => Some(Self::UnsupportedModifier),
-            "allocation-failed" => Some(Self::AllocationFailed),
-            "synchronization-unavailable" => Some(Self::SynchronizationUnavailable),
-            "import-unavailable" => Some(Self::ImportUnavailable),
-            "release-unavailable" => Some(Self::ReleaseUnavailable),
-            _ => None,
-        }
+        Self::DIAGNOSTIC_NAMES
+            .iter()
+            .find_map(|(reason, diagnostic_name)| (*diagnostic_name == name).then_some(*reason))
     }
 }
 
@@ -64,12 +65,6 @@ impl DmaBufFallbackReason {
 pub struct CaptureBackendSelection {
     backend: CaptureBackend,
     fallback_reason: Option<DmaBufFallbackReason>,
-}
-
-impl Default for CaptureBackendSelection {
-    fn default() -> Self {
-        Self::shared_memory(DmaBufFallbackReason::ImportUnavailable)
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
