@@ -196,6 +196,10 @@ fn layout_reveals_the_selected_row_and_hit_tests_fractional_pointer_positions() 
     assert_eq!(layout.item_at(350.0, 20.0), Some(5));
     assert_eq!(layout.item_at(20.0, 270.0), Some(6));
     assert_eq!(layout.item_at(10.0, 10.0), None);
+    assert_eq!(
+        grid.window_at(&layout, 20.0, 270.0).map(WindowId::as_str),
+        Some("window-6")
+    );
 }
 
 #[test]

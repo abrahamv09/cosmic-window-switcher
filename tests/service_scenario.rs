@@ -31,10 +31,7 @@ fn synchronize_capture_viewport(
         }
     }
     let layout = grid.layout(760, 548, CardSize::Medium);
-    let visible_windows = grid.items()[layout.visible_item_range()]
-        .iter()
-        .map(|item| item.window().clone());
-    captures.set_visible(visible_windows);
+    captures.set_grid_viewport(grid, &layout);
 }
 
 #[test]
@@ -271,6 +268,10 @@ fn pointer_entry_is_inert_until_motion_then_hover_selects_and_press_activates() 
     );
     assert_eq!(
         service.handle(ServiceEvent::PointerPressed(Some(window("least-recent")))),
+        Vec::<ServiceEffect>::new()
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::PointerReleased(Some(window("least-recent")))),
         vec![ServiceEffect::Activate(window("least-recent"))]
     );
 }
@@ -292,7 +293,37 @@ fn pointer_press_outside_the_revealed_grid_cancels_without_activation() {
 
     assert_eq!(
         service.handle(ServiceEvent::PointerPressed(None)),
+        Vec::<ServiceEffect>::new()
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::PointerReleased(None)),
         vec![ServiceEffect::Cancel]
+    );
+}
+
+#[test]
+fn moving_away_before_pointer_release_withdraws_the_click() {
+    let mut service = service_with_mru_order(&["focused", "previous", "least-recent"]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::empty(),
+    });
+    service.handle(ServiceEvent::SessionReady);
+    service.handle(ServiceEvent::RevealDelayElapsed);
+
+    assert_eq!(
+        service.handle(ServiceEvent::PointerPressed(Some(window("least-recent")))),
+        Vec::<ServiceEffect>::new()
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::PointerReleased(None)),
+        Vec::<ServiceEffect>::new()
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::Switching(
+            cosmic_window_switcher::SwitchingEvent::Enter
+        )),
+        vec![ServiceEffect::Activate(window("previous"))]
     );
 }
 

@@ -3,19 +3,14 @@
 use anyhow::{Context, Result};
 use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
 use cosmic_window_switcher::{
-    CardSize, GridLayout, GridRect, SwitcherGrid, SwitcherItem, ThumbnailFrame, WindowId,
+    CardSize, GridLayout, GridRect, SwitcherGrid, SwitcherItem, ThumbnailFrame,
 };
 
 use super::icons::{IconImage, IconResolver};
 
-const ICON_SIZE: u32 = 36;
-const THUMBNAIL_PADDING: u32 = 12;
-const THUMBNAIL_HEIGHT: u32 = 172;
-
 pub(super) struct RenderedOverlay {
     pub(super) dimensions: OverlayDimensions,
     pub(super) pixels: Vec<u8>,
-    pub(super) visible_windows: Vec<WindowId>,
     pub(super) layout: GridLayout,
 }
 
@@ -23,7 +18,15 @@ pub(super) struct RenderedOverlay {
 pub(super) struct OverlayDimensions {
     pub(super) logical_width: u32,
     pub(super) logical_height: u32,
-    pub(super) scale: i32,
+    physical_width: u32,
+    physical_height: u32,
+    pub(super) buffer_scale: i32,
+}
+
+impl OverlayDimensions {
+    pub(super) const fn physical_size(self) -> (u32, u32) {
+        (self.physical_width, self.physical_height)
+    }
 }
 
 pub(super) struct OverlayRenderer {
@@ -46,37 +49,29 @@ impl OverlayRenderer {
         grid: &mut SwitcherGrid,
         surface_logical_width: u32,
         surface_logical_height: u32,
-        scale: i32,
+        card_size: CardSize,
+        scale_120: u32,
     ) -> Result<RenderedOverlay> {
-        let scale = scale.max(1);
-        let physical_scale = u32::try_from(scale).context("invalid output scale")?;
-        let font_scale = f32::from(u16::try_from(scale).context("output scale is too large")?);
+        let scale_120 = scale_120.max(1);
+        let font_scale =
+            f32::from(u16::try_from(scale_120).context("fractional scale is too large")?) / 120.0;
         let layout = grid
             .layout(
                 surface_logical_width.saturating_mul(4) / 5,
                 surface_logical_height.saturating_mul(4) / 5,
-                CardSize::Medium,
+                card_size,
             )
             .centered_in(surface_logical_width, surface_logical_height);
         let visible_item_range = layout.visible_item_range();
         let logical_width = surface_logical_width;
         let logical_height = surface_logical_height;
-        let physical_width = logical_width
-            .checked_mul(physical_scale)
-            .context("Switcher Grid width overflow")?;
-        let physical_height = logical_height
-            .checked_mul(physical_scale)
-            .context("Switcher Grid height overflow")?;
+        let physical_width = scaled_length(logical_width, scale_120);
+        let physical_height = scaled_length(logical_height, scale_120);
         let pixel_count = physical_width
             .checked_mul(physical_height)
             .context("Switcher Grid area overflow")?;
         let mut pixels =
             vec![0_u32; usize::try_from(pixel_count).context("Switcher Grid is too large")?];
-        let visible_windows = grid.items()[visible_item_range.clone()]
-            .iter()
-            .map(|item| item.window().clone())
-            .collect();
-
         fill_rect(
             &mut pixels,
             physical_width,
@@ -96,7 +91,7 @@ impl OverlayRenderer {
                 physical_width,
                 item,
                 bounds,
-                (physical_scale, font_scale),
+                (scale_120, font_scale),
             );
         }
 
@@ -108,10 +103,11 @@ impl OverlayRenderer {
             dimensions: OverlayDimensions {
                 logical_width,
                 logical_height,
-                scale,
+                physical_width,
+                physical_height,
+                buffer_scale: i32::try_from(scale_120.div_ceil(120)).unwrap_or(i32::MAX),
             },
             pixels: bytes,
-            visible_windows,
             layout,
         })
     }
@@ -125,16 +121,14 @@ impl OverlayRenderer {
         bounds: GridRect,
         scale: (u32, f32),
     ) {
-        let (physical_scale, font_scale) = scale;
+        let (scale_120, font_scale) = scale;
         let (item_width, item_height) = bounds.size();
-        let x = bounds.x() * physical_scale;
-        let y = bounds.y() * physical_scale;
-        let item_rect = Rect::new(
-            x,
-            y,
-            item_width * physical_scale,
-            item_height * physical_scale,
-        );
+        let item_height_f32 = f32::from(u16::try_from(item_height).unwrap_or(u16::MAX));
+        let x = scaled_length(bounds.x(), scale_120);
+        let y = scaled_length(bounds.y(), scale_120);
+        let physical_item_width = scaled_length(item_width, scale_120);
+        let physical_item_height = scaled_length(item_height, scale_120);
+        let item_rect = Rect::new(x, y, physical_item_width, physical_item_height);
         let item_color = if item.is_selected() {
             Color::rgb(38, 92, 150)
         } else {
@@ -146,16 +140,21 @@ impl OverlayRenderer {
                 pixels,
                 surface_width,
                 item_rect,
-                3 * physical_scale,
+                scaled_length(3, scale_120),
                 Color::rgb(124, 189, 255),
             );
         }
 
+        let thumbnail_padding = item_width / 27;
+        let footer_height = item_height / 4;
         let thumbnail_rect = Rect::new(
-            x + THUMBNAIL_PADDING * physical_scale,
-            y + THUMBNAIL_PADDING * physical_scale,
-            (item_width - 2 * THUMBNAIL_PADDING) * physical_scale,
-            THUMBNAIL_HEIGHT * physical_scale,
+            x + scaled_length(thumbnail_padding, scale_120),
+            y + scaled_length(thumbnail_padding, scale_120),
+            scaled_length(item_width.saturating_sub(2 * thumbnail_padding), scale_120),
+            scaled_length(
+                item_height.saturating_sub(footer_height + 2 * thumbnail_padding),
+                scale_120,
+            ),
         );
         fill_rect(
             pixels,
@@ -167,15 +166,19 @@ impl OverlayRenderer {
             draw_thumbnail(pixels, surface_width, thumbnail_rect, thumbnail);
         }
 
+        let footer_top = item_height.saturating_sub(footer_height);
+        let footer_padding = item_width / 20;
+        let icon_size = footer_height.saturating_mul(3) / 5;
+        let icon_y = footer_top + footer_height.saturating_sub(icon_size) / 2;
         let icon_rect = Rect::new(
-            x + 16 * physical_scale,
-            y + 190 * physical_scale,
-            ICON_SIZE * physical_scale,
-            ICON_SIZE * physical_scale,
+            x + scaled_length(footer_padding, scale_120),
+            y + scaled_length(icon_y, scale_120),
+            scaled_length(icon_size, scale_120),
+            scaled_length(icon_size, scale_120),
         );
         let icon_drawn = self
             .icons
-            .resolve(item.application_icon(), ICON_SIZE * physical_scale)
+            .resolve(item.application_icon(), scaled_length(icon_size, scale_120))
             .is_some_and(|icon| {
                 draw_icon(pixels, surface_width, icon_rect, icon);
                 true
@@ -191,25 +194,30 @@ impl OverlayRenderer {
                 pixels,
                 surface_width,
                 &item.application_icon().fallback_monogram().to_string(),
-                icon_rect.x + 10 * physical_scale,
-                icon_rect.y + 5 * physical_scale,
-                20 * physical_scale,
-                24 * physical_scale,
-                18.0 * font_scale,
-                22.0 * font_scale,
+                icon_rect.x + icon_rect.width / 4,
+                icon_rect.y + icon_rect.height / 8,
+                icon_rect.width / 2,
+                icon_rect.height.saturating_mul(3) / 4,
+                (item_height_f32 * 0.075) * font_scale,
+                (item_height_f32 * 0.092) * font_scale,
                 Color::rgb(255, 255, 255),
             );
         }
+        let title_x = footer_padding + icon_size + item_width / 27;
+        let title_y = footer_top + footer_height / 4;
         self.draw_text(
             pixels,
             surface_width,
             item.title(),
-            x + 64 * physical_scale,
-            y + 197 * physical_scale,
-            (item_width - 80) * physical_scale,
-            28 * physical_scale,
-            16.0 * font_scale,
-            22.0 * font_scale,
+            x + scaled_length(title_x, scale_120),
+            y + scaled_length(title_y, scale_120),
+            scaled_length(
+                item_width.saturating_sub(title_x + footer_padding),
+                scale_120,
+            ),
+            scaled_length(footer_height / 2, scale_120),
+            (item_height_f32 / 15.0) * font_scale,
+            (item_height_f32 * 0.092) * font_scale,
             Color::rgb(250, 251, 255),
         );
     }
@@ -264,6 +272,13 @@ impl OverlayRenderer {
             },
         );
     }
+}
+
+fn scaled_length(logical: u32, scale_120: u32) -> u32 {
+    let scaled = u64::from(logical)
+        .saturating_mul(u64::from(scale_120))
+        .div_ceil(120);
+    u32::try_from(scaled).unwrap_or(u32::MAX)
 }
 
 #[derive(Clone, Copy)]
@@ -452,5 +467,43 @@ fn draw_thumbnail(
                 *target = color.0;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cosmic_window_switcher::{CardSize, SessionDisplay, SwitcherGrid, SwitcherItem, WindowId};
+
+    use super::OverlayRenderer;
+
+    #[test]
+    fn renderer_uses_the_selected_card_preset_and_fractional_scale() {
+        let mut grid = SwitcherGrid::new(
+            SessionDisplay::from("eDP-1"),
+            (0..20).map(|index| {
+                SwitcherItem::new(
+                    WindowId::from(format!("window-{index}")),
+                    "com.example.Application".to_owned(),
+                    format!("A long Window title {index}"),
+                )
+            }),
+            &WindowId::from("window-1"),
+        )
+        .expect("the Initial Selection belongs to the Switcher Grid");
+        let mut renderer = OverlayRenderer::new();
+
+        let overlay = renderer
+            .render(&mut grid, 800, 600, CardSize::Small, 150)
+            .expect("the fractionally scaled grid renders");
+
+        assert_eq!(
+            overlay
+                .layout
+                .item_bounds(0)
+                .map(cosmic_window_switcher::GridRect::size),
+            Some((240, 180))
+        );
+        assert_eq!(overlay.dimensions.physical_size(), (1_000, 750));
+        assert_eq!(overlay.pixels.len(), 1_000 * 750 * 4);
     }
 }

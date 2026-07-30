@@ -99,6 +99,7 @@ pub enum ServiceEvent {
     PointerEntered(Option<WindowId>),
     PointerMoved(Option<WindowId>),
     PointerPressed(Option<WindowId>),
+    PointerReleased(Option<WindowId>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -263,6 +264,11 @@ impl SwitchingSession {
             .expect("the checked Window belongs to the Switching Session");
         self.state = SessionState::Finished;
         SessionEffect::Activate(window.clone())
+    }
+
+    fn cancel(&mut self) -> SessionEffect {
+        self.state = SessionState::Finished;
+        SessionEffect::Cancelled
     }
 
     fn window_closed(&mut self, window: &WindowId) -> SessionEffect {
@@ -635,6 +641,12 @@ impl SwitcherGrid {
             .iter()
             .find(|item| item.is_selected())
             .map(SwitcherItem::window)
+    }
+
+    #[must_use]
+    pub fn window_at(&self, layout: &GridLayout, x: f64, y: f64) -> Option<&WindowId> {
+        let item_index = layout.item_at(x, y)?;
+        self.items.get(item_index).map(SwitcherItem::window)
     }
 
     /// Returns the item range for a viewport that scrolls only enough to keep
@@ -1054,6 +1066,15 @@ struct ActiveSession {
     reveal_due: bool,
     revealed: bool,
     activation_after_readiness: Option<WindowId>,
+    pointer_press: PointerPress,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum PointerPress {
+    #[default]
+    None,
+    Outside,
+    Item(WindowId),
 }
 
 impl ActiveSession {
@@ -1071,6 +1092,48 @@ impl ActiveSession {
             }
             SessionEffect::Cancelled => (vec![ServiceEffect::Cancel], true),
             SessionEffect::None => (Vec::new(), false),
+        }
+    }
+
+    fn handle_pointer_event(&mut self, event: ServiceEvent) -> SessionEffect {
+        if !self.revealed {
+            return SessionEffect::None;
+        }
+        match event {
+            ServiceEvent::PointerMoved(Some(window))
+                if self.pointer_press == PointerPress::None =>
+            {
+                self.session.select_window(&window)
+            }
+            ServiceEvent::PointerPressed(Some(window)) if self.session.contains(&window) => {
+                self.pointer_press = PointerPress::Item(window);
+                SessionEffect::None
+            }
+            ServiceEvent::PointerPressed(None) => {
+                self.pointer_press = PointerPress::Outside;
+                SessionEffect::None
+            }
+            ServiceEvent::PointerReleased(released_over) => {
+                let pressed = std::mem::take(&mut self.pointer_press);
+                match (pressed, released_over) {
+                    (PointerPress::Item(pressed), Some(released)) if pressed == released => {
+                        self.session.activate_window(&released)
+                    }
+                    (PointerPress::Outside, None) => self.session.cancel(),
+                    _ => SessionEffect::None,
+                }
+            }
+            ServiceEvent::PointerEntered(_)
+            | ServiceEvent::PointerMoved(_)
+            | ServiceEvent::PointerPressed(_) => SessionEffect::None,
+            ServiceEvent::SessionReady
+            | ServiceEvent::SessionReadinessFailed
+            | ServiceEvent::RevealDelayElapsed
+            | ServiceEvent::HoldModifiersChanged(_)
+            | ServiceEvent::Switching(_)
+            | ServiceEvent::Invocation(_) => {
+                unreachable!("only pointer events are passed to the pointer handler")
+            }
         }
     }
 }
@@ -1165,6 +1228,7 @@ impl SwitcherService {
             reveal_due: false,
             revealed: false,
             activation_after_readiness: None,
+            pointer_press: PointerPress::None,
         });
         vec![ServiceEffect::PrepareInvisibleOverlay { selected }]
     }
@@ -1231,31 +1295,17 @@ impl SwitcherService {
                 }
                 effects
             }
-            ServiceEvent::PointerMoved(Some(window)) if active_session.revealed => {
-                let effect = active_session.session.select_window(&window);
-                let (effects, finished) = active_session.translate_session_effect(effect);
-                if finished {
-                    self.active_session = None;
-                }
-                effects
-            }
-            ServiceEvent::PointerPressed(Some(window))
-                if active_session.revealed && active_session.session.contains(&window) =>
-            {
-                let effect = active_session.session.activate_window(&window);
-                let (effects, finished) = active_session.translate_session_effect(effect);
-                if finished {
-                    self.active_session = None;
-                }
-                effects
-            }
-            ServiceEvent::PointerPressed(None) if active_session.revealed => {
-                self.active_session = None;
-                vec![ServiceEffect::Cancel]
-            }
-            ServiceEvent::PointerEntered(_)
+            event @ (ServiceEvent::PointerEntered(_)
             | ServiceEvent::PointerMoved(_)
-            | ServiceEvent::PointerPressed(_) => Vec::new(),
+            | ServiceEvent::PointerPressed(_)
+            | ServiceEvent::PointerReleased(_)) => {
+                let effect = active_session.handle_pointer_event(event);
+                let (effects, finished) = active_session.translate_session_effect(effect);
+                if finished {
+                    self.active_session = None;
+                }
+                effects
+            }
         }
     }
 

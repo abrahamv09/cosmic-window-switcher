@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt, time::Duration};
 
-use crate::WindowId;
+use crate::{GridLayout, SwitcherGrid, WindowId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShmFormat {
@@ -394,6 +394,15 @@ impl CaptureSessionModel {
             });
         }
         effects
+    }
+
+    pub fn set_grid_viewport(
+        &mut self,
+        grid: &SwitcherGrid,
+        layout: &GridLayout,
+    ) -> Vec<CaptureEffect> {
+        let visible = &grid.items()[layout.visible_item_range()];
+        self.set_visible(visible.iter().map(|item| item.window().clone()))
     }
 
     pub fn set_selected(&mut self, selected: Option<WindowId>) {

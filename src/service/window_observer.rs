@@ -46,12 +46,16 @@ use wayland_protocols::ext::{
     },
     image_copy_capture::v1::client::ext_image_copy_capture_manager_v1,
 };
+use wayland_protocols::wp::{
+    fractional_scale::v1::client::{wp_fractional_scale_manager_v1, wp_fractional_scale_v1},
+    viewporter::client::{wp_viewport, wp_viewporter},
+};
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, GridLayout, HoldModifiers,
-    InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
-    SessionDisplay, ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent,
-    WindowEvent, WindowId,
+    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, GridLayout,
+    HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect,
+    ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem,
+    SwitchingEvent, WindowEvent, WindowId,
 };
 
 use super::{
@@ -91,6 +95,16 @@ impl WindowObserver {
             LayerShell::bind(&globals, &queue_handle).context("bind wlr layer shell")?;
         let shm = Shm::bind(&globals, &queue_handle).context("bind wl_shm")?;
         let registry_state = RegistryState::new(&globals);
+        let fractional_scale_manager = registry_state
+            .bind_one::<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1, _, _>(
+                &queue_handle,
+                1..=1,
+                (),
+            )
+            .ok();
+        let viewporter = registry_state
+            .bind_one::<wp_viewporter::WpViewporter, _, _>(&queue_handle, 1..=1, ())
+            .ok();
         let capture_backend = ShmCaptureState::new(&globals, &queue_handle);
         let foreign_toplevel_list = registry_state
             .bind_one::<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
@@ -115,6 +129,8 @@ impl WindowObserver {
             layer_shell,
             shm,
             output_state: OutputState::new(&globals, &queue_handle),
+            fractional_scale_manager,
+            viewporter,
             seat_state: SeatState::new(&globals, &queue_handle),
             toplevel_manager,
             _foreign_toplevel_list: foreign_toplevel_list,
@@ -129,6 +145,7 @@ impl WindowObserver {
             management_can_activate: false,
             accessibility: AccessibilityBridge::new(),
             overlay_renderer: OverlayRenderer::new(),
+            session_card_size: CardSize::Medium,
             layer: None,
             readiness_pool: None,
             readiness_buffer: None,
@@ -136,6 +153,9 @@ impl WindowObserver {
             grid_buffer: None,
             grid_dimensions: None,
             grid_layout: None,
+            fractional_scale: None,
+            viewport: None,
+            preferred_scale_120: None,
             grid: None,
             session_window_order: Vec::new(),
             session_output: None,
@@ -248,6 +268,8 @@ struct ProtocolObserver {
     layer_shell: LayerShell,
     shm: Shm,
     output_state: OutputState,
+    fractional_scale_manager: Option<wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1>,
+    viewporter: Option<wp_viewporter::WpViewporter>,
     seat_state: SeatState,
     toplevel_manager: ToplevelManagerState,
     capture_backend: ShmCaptureState,
@@ -262,6 +284,7 @@ struct ProtocolObserver {
     management_can_activate: bool,
     accessibility: AccessibilityBridge,
     overlay_renderer: OverlayRenderer,
+    session_card_size: CardSize,
     layer: Option<LayerSurface>,
     readiness_pool: Option<RawPool>,
     readiness_buffer: Option<wl_buffer::WlBuffer>,
@@ -269,6 +292,9 @@ struct ProtocolObserver {
     grid_buffer: Option<wl_buffer::WlBuffer>,
     grid_dimensions: Option<OverlayDimensions>,
     grid_layout: Option<GridLayout>,
+    fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
+    viewport: Option<wp_viewport::WpViewport>,
+    preferred_scale_120: Option<u32>,
     grid: Option<SwitcherGrid>,
     session_window_order: Vec<WindowId>,
     session_output: Option<wl_output::WlOutput>,
@@ -373,6 +399,15 @@ impl ProtocolObserver {
             Some(APPLICATION_ID),
             Some(&session_output),
         );
+        self.fractional_scale = self
+            .fractional_scale_manager
+            .as_ref()
+            .map(|manager| manager.get_fractional_scale(layer.wl_surface(), queue_handle, ()));
+        self.viewport = self
+            .viewporter
+            .as_ref()
+            .map(|viewporter| viewporter.get_viewport(layer.wl_surface(), queue_handle, ()));
+        self.preferred_scale_120 = None;
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.set_size(0, 0);
@@ -474,24 +509,17 @@ impl ProtocolObserver {
             | SwitchingEvent::Enter
             | SwitchingEvent::Escape => ServiceEvent::Switching(event),
         };
-        let effects = self
-            .service
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .handle(service_event);
-        self.apply_effects(effects);
+        self.handle_service_event(service_event);
     }
 
     fn window_at_pointer(&self, position: (f64, f64)) -> Option<WindowId> {
-        let item_index = self.grid_layout.as_ref()?.item_at(position.0, position.1)?;
         self.grid
             .as_ref()?
-            .items()
-            .get(item_index)
-            .map(|item| item.window().clone())
+            .window_at(self.grid_layout.as_ref()?, position.0, position.1)
+            .cloned()
     }
 
-    fn handle_pointer_event(&mut self, event: ServiceEvent) {
+    fn handle_service_event(&mut self, event: ServiceEvent) {
         let effects = self
             .service
             .write()
@@ -560,6 +588,12 @@ impl ProtocolObserver {
             eprintln!("release Live Thumbnail capture failed: {error:#}");
         }
         self.capture_backend.stop_all();
+        if let Some(fractional_scale) = self.fractional_scale.take() {
+            fractional_scale.destroy();
+        }
+        if let Some(viewport) = self.viewport.take() {
+            viewport.destroy();
+        }
         if let Some(layer) = self.layer.take() {
             layer.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer.commit();
@@ -574,6 +608,7 @@ impl ProtocolObserver {
         self.grid_pool = None;
         self.grid_dimensions = None;
         self.grid_layout = None;
+        self.preferred_scale_120 = None;
         self.grid = None;
         self.accessibility.hide();
         self.session_window_order.clear();
@@ -718,13 +753,21 @@ impl ProtocolObserver {
             .logical_size
             .and_then(|(_, height)| u32::try_from(height).ok())
             .unwrap_or(800);
+        let output_scale_120 = u32::try_from(output_info.scale_factor.max(1))
+            .unwrap_or(1)
+            .saturating_mul(120);
+        let scale_120 = self
+            .preferred_scale_120
+            .filter(|_| self.viewport.is_some())
+            .unwrap_or(output_scale_120);
         let rendered = self.overlay_renderer.render(
             self.grid
                 .as_mut()
                 .context("the Switching Session has no Switcher Grid")?,
             surface_width,
             surface_height,
-            output_info.scale_factor,
+            self.session_card_size,
+            scale_120,
         )?;
         self.install_rendered_grid(rendered)
     }
@@ -733,21 +776,12 @@ impl ProtocolObserver {
         let RenderedOverlay {
             dimensions,
             pixels,
-            visible_windows,
             layout,
         } = rendered;
         let mut pool = RawPool::new(pixels.len(), &self.shm)
             .context("allocate shared memory for the Switcher Grid")?;
         pool.mmap().copy_from_slice(&pixels);
-        let scale_u32 = u32::try_from(dimensions.scale).context("invalid output scale")?;
-        let physical_width = dimensions
-            .logical_width
-            .checked_mul(scale_u32)
-            .context("Switcher Grid width overflow")?;
-        let physical_height = dimensions
-            .logical_height
-            .checked_mul(scale_u32)
-            .context("Switcher Grid height overflow")?;
+        let (physical_width, physical_height) = dimensions.physical_size();
         let stride = physical_width
             .checked_mul(4)
             .context("Switcher Grid stride overflow")?;
@@ -765,17 +799,22 @@ impl ProtocolObserver {
         }
         self.grid_pool = Some(pool);
         self.grid_dimensions = Some(dimensions);
-        self.grid_layout = Some(layout);
         let selected = self
             .grid
             .as_ref()
             .and_then(SwitcherGrid::selected_window)
             .cloned();
         self.capture_model.set_selected(selected);
-        if !self.capture_backend.contract_available() && !visible_windows.is_empty() {
+        if !self.capture_backend.contract_available() && !layout.visible_item_range().is_empty() {
             bail!("the COSMIC Session does not expose required shared-memory capture protocols");
         }
-        let effects = self.capture_model.set_visible(visible_windows);
+        let effects = self.capture_model.set_grid_viewport(
+            self.grid
+                .as_ref()
+                .context("the Switching Session has no Switcher Grid")?,
+            &layout,
+        );
+        self.grid_layout = Some(layout);
         self.apply_capture_effects(effects)?;
         if self.interaction.visible {
             self.attach_grid_buffer()?;
@@ -804,27 +843,24 @@ impl ProtocolObserver {
         let dimensions = self
             .grid_dimensions
             .context("the Switcher Grid has no rendered dimensions")?;
-        let scale_u32 = u32::try_from(dimensions.scale).context("invalid output scale")?;
         layer.set_size(dimensions.logical_width, dimensions.logical_height);
-        layer.wl_surface().set_buffer_scale(dimensions.scale);
+        if let Some(viewport) = self.viewport.as_ref() {
+            layer.wl_surface().set_buffer_scale(1);
+            viewport.set_destination(
+                i32::try_from(dimensions.logical_width)
+                    .context("Switcher Grid logical width is too large")?,
+                i32::try_from(dimensions.logical_height)
+                    .context("Switcher Grid logical height is too large")?,
+            );
+        } else {
+            layer.wl_surface().set_buffer_scale(dimensions.buffer_scale);
+        }
         layer.wl_surface().attach(Some(buffer), 0, 0);
         layer.wl_surface().damage_buffer(
             0,
             0,
-            i32::try_from(
-                dimensions
-                    .logical_width
-                    .checked_mul(scale_u32)
-                    .context("Switcher Grid width overflow")?,
-            )
-            .context("Switcher Grid is too wide")?,
-            i32::try_from(
-                dimensions
-                    .logical_height
-                    .checked_mul(scale_u32)
-                    .context("Switcher Grid height overflow")?,
-            )
-            .context("Switcher Grid is too tall")?,
+            i32::try_from(dimensions.physical_size().0).context("Switcher Grid is too wide")?,
+            i32::try_from(dimensions.physical_size().1).context("Switcher Grid is too tall")?,
         );
         layer.commit();
         Ok(())
@@ -836,9 +872,19 @@ impl CompositorHandler for ProtocolObserver {
         &mut self,
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _new_factor: i32,
     ) {
+        if self
+            .layer
+            .as_ref()
+            .is_some_and(|layer| layer.wl_surface() == surface)
+            && self.preferred_scale_120.is_none()
+            && self.grid.is_some()
+            && let Err(error) = self.render_grid()
+        {
+            self.fail_overlay("render rescaled Switcher Grid failed", &error);
+        }
     }
 
     fn transform_changed(
@@ -1169,15 +1215,19 @@ impl PointerHandler for ProtocolObserver {
             match event.kind {
                 PointerEventKind::Enter { .. } => {
                     let window = self.window_at_pointer(event.position);
-                    self.handle_pointer_event(ServiceEvent::PointerEntered(window));
+                    self.handle_service_event(ServiceEvent::PointerEntered(window));
                 }
                 PointerEventKind::Motion { .. } => {
                     let window = self.window_at_pointer(event.position);
-                    self.handle_pointer_event(ServiceEvent::PointerMoved(window));
+                    self.handle_service_event(ServiceEvent::PointerMoved(window));
                 }
                 PointerEventKind::Press { button, .. } if button == PRIMARY_BUTTON => {
                     let window = self.window_at_pointer(event.position);
-                    self.handle_pointer_event(ServiceEvent::PointerPressed(window));
+                    self.handle_service_event(ServiceEvent::PointerPressed(window));
+                }
+                PointerEventKind::Release { button, .. } if button == PRIMARY_BUTTON => {
+                    let window = self.window_at_pointer(event.position);
+                    self.handle_service_event(ServiceEvent::PointerReleased(window));
                 }
                 PointerEventKind::Leave { .. }
                 | PointerEventKind::Press { .. }
@@ -1185,6 +1235,49 @@ impl PointerHandler for ProtocolObserver {
                 | PointerEventKind::Axis { .. } => {}
             }
         }
+    }
+}
+
+impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for ProtocolObserver {
+    fn event(
+        state: &mut Self,
+        scale: &wp_fractional_scale_v1::WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<Self>,
+    ) {
+        if state.fractional_scale.as_ref() != Some(scale) {
+            return;
+        }
+        let wp_fractional_scale_v1::Event::PreferredScale {
+            scale: preferred_scale,
+        } = event
+        else {
+            return;
+        };
+        if state.preferred_scale_120 == Some(preferred_scale) {
+            return;
+        }
+        state.preferred_scale_120 = Some(preferred_scale);
+        if state.grid.is_some()
+            && let Err(error) = state.render_grid()
+        {
+            state.fail_overlay("render fractionally scaled Switcher Grid failed", &error);
+        }
+    }
+}
+
+impl Dispatch<wp_viewport::WpViewport, ()> for ProtocolObserver {
+    fn event(
+        _state: &mut Self,
+        _viewport: &wp_viewport::WpViewport,
+        _event: wp_viewport::Event,
+        _data: &(),
+        _connection: &Connection,
+        _queue_handle: &QueueHandle<Self>,
+    ) {
+        unreachable!("wp_viewport has no events");
     }
 }
 
@@ -1629,6 +1722,8 @@ wayland_client::delegate_dispatch!(ProtocolObserver: [CaptureSession: CaptureSes
 wayland_client::delegate_dispatch!(ProtocolObserver: [CaptureFrame: CaptureFrameData] => ShmCaptureState);
 cosmic_client_toolkit::delegate_toplevel_manager!(ProtocolObserver);
 delegate_noop!(ProtocolObserver: ignore wl_buffer::WlBuffer);
+delegate_noop!(ProtocolObserver: ignore wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1);
+delegate_noop!(ProtocolObserver: ignore wp_viewporter::WpViewporter);
 
 #[cfg(test)]
 mod tests {
