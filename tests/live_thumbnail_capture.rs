@@ -264,3 +264,46 @@ fn compositor_transform_orients_content_before_fitting_it() {
     assert_eq!(frame.argb_pixel(0, 0), Some(0xFF44_5566));
     assert_eq!(frame.argb_pixel(0, 1), Some(0xFF11_2233));
 }
+
+#[test]
+fn every_compositor_transform_uses_one_consistent_geometry() {
+    let pixels = (1_u32..=6).flat_map(u32::to_ne_bytes).collect::<Vec<_>>();
+    let cases = [
+        (BufferTransform::Normal, (3, 2), vec![1, 2, 3, 4, 5, 6]),
+        (BufferTransform::Rotate90, (2, 3), vec![3, 6, 2, 5, 1, 4]),
+        (BufferTransform::Rotate180, (3, 2), vec![6, 5, 4, 3, 2, 1]),
+        (BufferTransform::Rotate270, (2, 3), vec![4, 1, 5, 2, 6, 3]),
+        (BufferTransform::Flipped, (3, 2), vec![3, 2, 1, 6, 5, 4]),
+        (BufferTransform::Flipped90, (2, 3), vec![1, 4, 2, 5, 3, 6]),
+        (BufferTransform::Flipped180, (3, 2), vec![4, 5, 6, 1, 2, 3]),
+        (BufferTransform::Flipped270, (2, 3), vec![6, 3, 5, 2, 4, 1]),
+    ];
+
+    for (transform, expected_size, expected_pixels) in cases {
+        let frame = ThumbnailFrame::with_transform(
+            ShmFrameLayout {
+                width: 3,
+                height: 2,
+                stride: 12,
+                byte_len: pixels.len(),
+                format: ShmFormat::Argb8888,
+            },
+            pixels.clone(),
+            transform,
+        )
+        .expect("the transformed frame is exact");
+
+        assert_eq!(frame.presentation_size(), expected_size);
+        let mut actual_pixels = Vec::new();
+        for y in 0..expected_size.1 {
+            for x in 0..expected_size.0 {
+                actual_pixels.push(
+                    frame
+                        .argb_pixel(x, y)
+                        .expect("the presentation coordinate maps into the frame"),
+                );
+            }
+        }
+        assert_eq!(actual_pixels, expected_pixels, "{transform:?}");
+    }
+}

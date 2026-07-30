@@ -41,6 +41,13 @@ pub enum BufferTransform {
     Flipped270,
 }
 
+#[derive(Clone, Copy)]
+struct TransformGeometry {
+    presentation_size: (u32, u32),
+    raw_x: (i32, i32, u32),
+    raw_y: (i32, i32, u32),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThumbnailFrame {
     layout: ShmFrameLayout,
@@ -113,11 +120,12 @@ impl ThumbnailFrame {
 
     #[must_use]
     pub fn argb_pixel(&self, x: u32, y: u32) -> Option<u32> {
-        let (presentation_width, presentation_height) = self.presentation_size();
+        let geometry = self.transform_geometry();
+        let (presentation_width, presentation_height) = geometry.presentation_size;
         if x >= presentation_width || y >= presentation_height {
             return None;
         }
-        let (raw_x, raw_y) = self.raw_coordinates(x, y);
+        let (raw_x, raw_y) = geometry.raw_coordinates(x, y);
         let offset = usize::try_from(raw_y)
             .ok()?
             .checked_mul(usize::try_from(self.layout.stride).ok()?)?
@@ -133,16 +141,7 @@ impl ThumbnailFrame {
 
     #[must_use]
     pub const fn presentation_size(&self) -> (u32, u32) {
-        match self.transform {
-            BufferTransform::Rotate90
-            | BufferTransform::Rotate270
-            | BufferTransform::Flipped90
-            | BufferTransform::Flipped270 => (self.layout.height, self.layout.width),
-            BufferTransform::Normal
-            | BufferTransform::Rotate180
-            | BufferTransform::Flipped
-            | BufferTransform::Flipped180 => (self.layout.width, self.layout.height),
-        }
+        self.transform_geometry().presentation_size
     }
 
     #[must_use]
@@ -170,20 +169,65 @@ impl ThumbnailFrame {
         }
     }
 
-    const fn raw_coordinates(&self, x: u32, y: u32) -> (u32, u32) {
+    const fn transform_geometry(&self) -> TransformGeometry {
         let width = self.layout.width;
         let height = self.layout.height;
+        let maximum_x = width.saturating_sub(1);
+        let maximum_y = height.saturating_sub(1);
         match self.transform {
-            BufferTransform::Normal => (x, y),
-            BufferTransform::Rotate90 => (width - 1 - y, x),
-            BufferTransform::Rotate180 => (width - 1 - x, height - 1 - y),
-            BufferTransform::Rotate270 => (y, height - 1 - x),
-            BufferTransform::Flipped => (width - 1 - x, y),
-            BufferTransform::Flipped90 => (y, x),
-            BufferTransform::Flipped180 => (x, height - 1 - y),
-            BufferTransform::Flipped270 => (width - 1 - y, height - 1 - x),
+            BufferTransform::Normal => {
+                TransformGeometry::new((width, height), (1, 0, 0), (0, 1, 0))
+            }
+            BufferTransform::Rotate90 => {
+                TransformGeometry::new((height, width), (0, -1, maximum_x), (1, 0, 0))
+            }
+            BufferTransform::Rotate180 => {
+                TransformGeometry::new((width, height), (-1, 0, maximum_x), (0, -1, maximum_y))
+            }
+            BufferTransform::Rotate270 => {
+                TransformGeometry::new((height, width), (0, 1, 0), (-1, 0, maximum_y))
+            }
+            BufferTransform::Flipped => {
+                TransformGeometry::new((width, height), (-1, 0, maximum_x), (0, 1, 0))
+            }
+            BufferTransform::Flipped90 => {
+                TransformGeometry::new((height, width), (0, 1, 0), (1, 0, 0))
+            }
+            BufferTransform::Flipped180 => {
+                TransformGeometry::new((width, height), (1, 0, 0), (0, -1, maximum_y))
+            }
+            BufferTransform::Flipped270 => {
+                TransformGeometry::new((height, width), (0, -1, maximum_x), (-1, 0, maximum_y))
+            }
         }
     }
+}
+
+impl TransformGeometry {
+    const fn new(
+        presentation_size: (u32, u32),
+        raw_x: (i32, i32, u32),
+        raw_y: (i32, i32, u32),
+    ) -> Self {
+        Self {
+            presentation_size,
+            raw_x,
+            raw_y,
+        }
+    }
+
+    fn raw_coordinates(self, x: u32, y: u32) -> (u32, u32) {
+        (
+            apply_coordinate(self.raw_x, x, y),
+            apply_coordinate(self.raw_y, x, y),
+        )
+    }
+}
+
+fn apply_coordinate((x_scale, y_scale, offset): (i32, i32, u32), x: u32, y: u32) -> u32 {
+    let coordinate =
+        i64::from(x_scale) * i64::from(x) + i64::from(y_scale) * i64::from(y) + i64::from(offset);
+    u32::try_from(coordinate).expect("validated transformed coordinates remain in the SHM frame")
 }
 
 const fn swap_red_and_blue(packed: u32) -> u32 {

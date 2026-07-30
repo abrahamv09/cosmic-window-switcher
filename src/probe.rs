@@ -2,18 +2,12 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
 use cosmic_client_toolkit::{
     GlobalData,
-    screencopy::{
-        CaptureFrame, CaptureOptions, CaptureSession, CaptureSource, FailureReason, Formats, Rect,
-        ScreencopyFrameData, ScreencopyFrameDataExt, ScreencopyHandler, ScreencopySessionData,
-        ScreencopySessionDataExt, ScreencopyState,
-    },
     toplevel_management::{ToplevelManagerHandler, ToplevelManagerState},
 };
 use cosmic_protocols::{
@@ -50,10 +44,20 @@ use wayland_client::{
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
     ext_foreign_toplevel_handle_v1, ext_foreign_toplevel_list_v1,
 };
+use wayland_protocols::ext::{
+    image_capture_source::v1::client::{
+        ext_foreign_toplevel_image_capture_source_manager_v1, ext_image_capture_source_v1,
+    },
+    image_copy_capture::v1::client::ext_image_copy_capture_manager_v1,
+};
 
+use crate::shm_capture::{
+    CaptureFrame, CaptureFrameData, CaptureSession, CaptureSessionData, ShmCaptureHandler,
+    ShmCaptureState, duration_to_timespec,
+};
 use cosmic_window_switcher::{
-    APPLICATION_ID, HoldModifiers, InvocationDirection, SessionEffect, SwitchingEvent,
-    SwitchingSession, WindowId,
+    APPLICATION_ID, HoldModifiers, InvocationDirection, SessionEffect, ShmConstraints,
+    ShmFrameLayout, SwitchingEvent, SwitchingSession, WindowId,
 };
 
 const LIVE_CONTRACT_FRAME_LIMIT: usize = 3;
@@ -96,7 +100,7 @@ pub fn run(include_titles: bool, live_thumbnails: bool) -> Result<()> {
         shm,
         cosmic_toplevel_info,
         windows: Vec::new(),
-        screencopy_state: ScreencopyState::new(&globals, &queue_handle),
+        capture_backend: ShmCaptureState::new(&globals, &queue_handle),
         toplevel_manager,
         layer: None,
         overlay_pool: None,
@@ -105,8 +109,7 @@ pub fn run(include_titles: bool, live_thumbnails: bool) -> Result<()> {
         session: None,
         initial_hold_modifiers: None,
         pending_switching_events: Vec::new(),
-        capture_sessions: Vec::new(),
-        capture_allocations: HashMap::new(),
+        capture_windows: Vec::new(),
         pending_recaptures: Vec::new(),
         captured_frames: HashMap::new(),
         unchanged_windows: HashSet::new(),
@@ -229,7 +232,7 @@ struct Probe {
     shm: Shm,
     cosmic_toplevel_info: zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
     windows: Vec<WindowInfo>,
-    screencopy_state: ScreencopyState,
+    capture_backend: ShmCaptureState,
     toplevel_manager: ToplevelManagerState,
     layer: Option<LayerSurface>,
     overlay_pool: Option<RawPool>,
@@ -238,9 +241,8 @@ struct Probe {
     session: Option<SwitchingSession>,
     initial_hold_modifiers: Option<HoldModifiers>,
     pending_switching_events: Vec<SwitchingEvent>,
-    capture_sessions: Vec<CaptureSession>,
-    capture_allocations: HashMap<WindowId, Arc<ProbeCaptureAllocation>>,
-    pending_recaptures: Vec<PendingRecapture>,
+    capture_windows: Vec<WindowId>,
+    pending_recaptures: Vec<PendingCaptureRequest>,
     captured_frames: HashMap<WindowId, usize>,
     unchanged_windows: HashSet<WindowId>,
     capture_attempts: usize,
@@ -269,14 +271,13 @@ impl Probe {
             Ok(())
         };
         if self.capture_mode == CaptureProbeMode::LiveContract {
-            for session in &self.capture_sessions {
-                let window = capture_session_window_id(session);
-                let frames = self.captured_frames.get(&window).copied().unwrap_or(0);
+            for window in &self.capture_windows {
+                let frames = self.captured_frames.get(window).copied().unwrap_or(0);
                 if frames > 1 {
                     println!(
                         "Damage contract Window {window}: {frames} frame(s); changed content produced a new frame."
                     );
-                } else if self.unchanged_windows.contains(&window) {
+                } else if self.unchanged_windows.contains(window) {
                     println!(
                         "Damage contract Window {window}: unchanged compositor response was suppressed."
                     );
@@ -287,20 +288,14 @@ impl Probe {
                 }
             }
         }
-        let released_allocations = self.capture_allocations.len();
-        for allocation in self
-            .capture_allocations
-            .drain()
-            .map(|(_, allocation)| allocation)
-        {
-            allocation.release();
-        }
         self.pending_recaptures.clear();
-        let released_sessions = self.capture_sessions.len();
-        self.capture_sessions.clear();
+        let (released_sessions, released_frames, released_allocations) =
+            self.capture_backend.stop_all();
         if self.capture_mode == CaptureProbeMode::LiveContract {
             println!(
-                "Session-stop contract: released {released_sessions} capture session(s) and {released_allocations} outstanding SHM allocation(s)."
+                "Session-stop contract: released {released_sessions} capture session(s), \
+                 {released_frames} outstanding capture frame(s), and \
+                 {released_allocations} SHM allocation(s)."
             );
         }
         result
@@ -308,13 +303,17 @@ impl Probe {
 
     fn start_pending_recaptures(&mut self, queue_handle: &QueueHandle<Self>) {
         for pending in std::mem::take(&mut self.pending_recaptures) {
-            self.request_capture_frame(
-                &pending.session,
-                pending.window,
-                pending.size,
-                pending.format,
+            if let Err(error) = self.capture_backend.request_frame(
+                &pending.window,
+                pending.layout,
+                &self.shm,
                 queue_handle,
-            );
+            ) {
+                self.note_capture_failure(&format!(
+                    "request another SHM frame for Window {} failed: {error:#}",
+                    pending.window
+                ));
+            }
         }
     }
 
@@ -352,106 +351,17 @@ impl Probe {
         }
 
         for window in windows {
-            let capture_session = self
-                .screencopy_state
-                .capturer()
-                .create_session(
-                    &CaptureSource::Toplevel(window.foreign_toplevel.clone()),
-                    CaptureOptions::empty(),
-                    queue_handle,
-                    CaptureData {
-                        data: ScreencopySessionData::default(),
-                        window_id: WindowId::from(window.identifier.clone()),
-                    },
-                )
+            let window_id = WindowId::from(window.identifier.clone());
+            self.capture_backend
+                .create_stream(window_id.clone(), &window.foreign_toplevel, queue_handle)
                 .with_context(|| {
                     format!("create capture session for Window {}", window.identifier)
                 })?;
-            self.capture_sessions.push(capture_session);
+            self.capture_windows.push(window_id);
             self.capture_attempts += 1;
         }
 
         Ok(())
-    }
-
-    fn request_capture_frame(
-        &mut self,
-        session: &CaptureSession,
-        window: WindowId,
-        size: (u32, u32),
-        format: wl_shm::Format,
-        queue_handle: &QueueHandle<Self>,
-    ) {
-        let (width, height) = size;
-        let Some(byte_len) = exact_frame_byte_len(width, height) else {
-            self.note_capture_failure(&format!(
-                "Window capture reported invalid size {width}x{height}"
-            ));
-            return;
-        };
-        let Ok(width_i32) = i32::try_from(width) else {
-            self.note_capture_failure(&format!("Window capture width {width} is too large"));
-            return;
-        };
-        let Ok(height_i32) = i32::try_from(height) else {
-            self.note_capture_failure(&format!("Window capture height {height} is too large"));
-            return;
-        };
-        let Some(stride) = width_i32.checked_mul(4) else {
-            self.note_capture_failure(&format!(
-                "Window capture width {width} overflows its stride"
-            ));
-            return;
-        };
-        let (allocation, buffer_damage) = if let Some(allocation) = self
-            .capture_allocations
-            .get(&window)
-            .filter(|allocation| allocation.size == size && allocation.format == format)
-            .cloned()
-        {
-            (allocation, Vec::new())
-        } else {
-            let mut pool = match RawPool::new(byte_len, &self.shm) {
-                Ok(pool) => pool,
-                Err(error) => {
-                    self.note_capture_failure(&format!("allocate memory-only SHM frame: {error}"));
-                    return;
-                }
-            };
-            let buffer =
-                pool.create_buffer(0, width_i32, height_i32, stride, format, (), queue_handle);
-            let allocation = Arc::new(ProbeCaptureAllocation {
-                pool: Mutex::new(Some(pool)),
-                buffer,
-                size,
-                format,
-            });
-            if let Some(previous) = self
-                .capture_allocations
-                .insert(window.clone(), Arc::clone(&allocation))
-            {
-                previous.release();
-            }
-            (
-                allocation,
-                vec![Rect {
-                    x: 0,
-                    y: 0,
-                    width: width_i32,
-                    height: height_i32,
-                }],
-            )
-        };
-        session.capture(
-            &allocation.buffer,
-            &buffer_damage,
-            queue_handle,
-            FrameData {
-                data: ScreencopyFrameData::default(),
-                window_id: window,
-                allocation: Arc::clone(&allocation),
-            },
-        );
     }
 
     fn try_start_switching_session(&mut self) -> Result<()> {
@@ -1082,238 +992,84 @@ fn toplevel_is_activated(bytes: &[u8]) -> bool {
     })
 }
 
-struct CaptureData {
-    data: ScreencopySessionData,
-    window_id: WindowId,
-}
-
-impl ScreencopySessionDataExt for CaptureData {
-    fn screencopy_session_data(&self) -> &ScreencopySessionData {
-        &self.data
-    }
-}
-
-struct FrameData {
-    data: ScreencopyFrameData,
-    window_id: WindowId,
-    allocation: Arc<ProbeCaptureAllocation>,
-}
-
-impl ScreencopyFrameDataExt for FrameData {
-    fn screencopy_frame_data(&self) -> &ScreencopyFrameData {
-        &self.data
-    }
-}
-
-struct ProbeCaptureAllocation {
-    pool: Mutex<Option<RawPool>>,
-    buffer: wl_buffer::WlBuffer,
-    size: (u32, u32),
-    format: wl_shm::Format,
-}
-
-impl ProbeCaptureAllocation {
-    fn byte_len(&self) -> Option<usize> {
-        self.pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
-            .map(RawPool::len)
-    }
-
-    fn release(&self) {
-        let mut pool = self
-            .pool
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if pool.take().is_some() {
-            self.buffer.destroy();
-        }
-    }
-}
-
-impl Drop for ProbeCaptureAllocation {
-    fn drop(&mut self) {
-        let pool = self
-            .pool
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if pool.take().is_some() {
-            self.buffer.destroy();
-        }
-    }
-}
-
-struct PendingRecapture {
-    session: CaptureSession,
+struct PendingCaptureRequest {
     window: WindowId,
-    size: (u32, u32),
-    format: wl_shm::Format,
+    layout: ShmFrameLayout,
 }
 
-fn capture_session_window_id(session: &CaptureSession) -> WindowId {
-    session.data::<CaptureData>().map_or_else(
-        || WindowId::from("<unknown>"),
-        |data| data.window_id.clone(),
-    )
-}
-
-fn capture_frame_window_id(frame: &CaptureFrame) -> WindowId {
-    frame.data::<FrameData>().map_or_else(
-        || WindowId::from("<unknown>"),
-        |data| data.window_id.clone(),
-    )
-}
-
-impl ScreencopyHandler for Probe {
-    fn screencopy_state(&mut self) -> &mut ScreencopyState {
-        &mut self.screencopy_state
-    }
-
-    fn init_done(
+impl ShmCaptureHandler for Probe {
+    fn constraints_ready(
         &mut self,
-        _connection: &Connection,
         queue_handle: &QueueHandle<Self>,
         session: &CaptureSession,
-        formats: &Formats,
+        constraints: ShmConstraints,
     ) {
-        let Some(format) = preferred_shm_format(&formats.shm_formats) else {
-            let window_id = capture_session_window_id(session);
+        let window =
+            ShmCaptureState::session_window(session).unwrap_or_else(|| WindowId::from("<unknown>"));
+        let Some(layout) = constraints.negotiate() else {
             self.note_capture_failure(&format!(
-                "Window {window_id} offered no supported four-byte SHM format"
+                "Window {window} offered no supported exact-size four-byte SHM layout"
             ));
+            self.capture_backend.stop_stream(&window);
             return;
         };
-        let window_id = capture_session_window_id(session);
-        self.request_capture_frame(
-            session,
-            window_id,
-            formats.buffer_size,
-            format,
-            queue_handle,
-        );
-    }
-
-    fn stopped(
-        &mut self,
-        _connection: &Connection,
-        _queue_handle: &QueueHandle<Self>,
-        session: &CaptureSession,
-    ) {
-        let window_id = capture_session_window_id(session);
-        if let Some(allocation) = self.capture_allocations.remove(&window_id) {
-            allocation.release();
-        }
-        self.note_capture_failure(&format!("capture stopped for Window {window_id}"));
-    }
-
-    fn ready(
-        &mut self,
-        _connection: &Connection,
-        _queue_handle: &QueueHandle<Self>,
-        capture_frame: &CaptureFrame,
-        frame: cosmic_client_toolkit::screencopy::Frame,
-    ) {
-        let Some(data) = capture_frame.data::<FrameData>() else {
-            self.fatal_error = Some("capture completed without frame metadata".to_owned());
-            return;
-        };
-        let size = data.allocation.size;
-        let format = data.allocation.format;
-        let byte_len = data.allocation.byte_len();
-        let expected = exact_frame_byte_len(size.0, size.1);
-        if expected != byte_len {
-            data.allocation.release();
-            self.capture_allocations.remove(&data.window_id);
-            self.fatal_error = Some(format!(
-                "Window {} returned a non-exact SHM frame",
-                data.window_id
+        if let Err(error) =
+            self.capture_backend
+                .request_frame(&window, layout, &self.shm, queue_handle)
+        {
+            self.note_capture_failure(&format!(
+                "request initial SHM frame for Window {window} failed: {error:#}"
             ));
-            return;
+            self.capture_backend.stop_stream(&window);
         }
-        let previous_frame_count = self
-            .captured_frames
-            .get(&data.window_id)
-            .copied()
-            .unwrap_or(0);
-        if previous_frame_count > 0 && frame.damage.is_empty() {
-            self.unchanged_windows.insert(data.window_id.clone());
+    }
+
+    fn capture_stopped(&mut self, session: &CaptureSession) {
+        let window =
+            ShmCaptureState::session_window(session).unwrap_or_else(|| WindowId::from("<unknown>"));
+        self.capture_backend.stop_stream(&window);
+        self.note_capture_failure(&format!("capture stopped for Window {window}"));
+    }
+
+    fn frame_ready(&mut self, capture_frame: &CaptureFrame) {
+        let completed = match self.capture_backend.complete_frame(capture_frame) {
+            Ok(completed) => completed,
+            Err(error) => {
+                self.fatal_error = Some(format!("complete exact-size SHM frame: {error:#}"));
+                return;
+            }
+        };
+        let window = completed.window;
+        let layout = completed.thumbnail.layout();
+        let previous_frame_count = self.captured_frames.get(&window).copied().unwrap_or(0);
+        if previous_frame_count > 0 && completed.damage.is_empty() {
+            self.unchanged_windows.insert(window.clone());
             println!(
-                "Suppressed unchanged SHM frame for Window {}; no duplicate thumbnail was presented.",
-                data.window_id
+                "Suppressed unchanged SHM frame for Window {window}; no duplicate thumbnail was presented."
             );
             return;
         }
         self.capture_succeeded = true;
-        let frame_count = self
-            .captured_frames
-            .entry(data.window_id.clone())
-            .or_default();
+        let frame_count = self.captured_frames.entry(window.clone()).or_default();
         *frame_count += 1;
         println!(
             "Captured exact-size memory-only SHM frame for Window {}: {}x{}, {} bytes, {:?}.",
-            data.window_id,
-            size.0,
-            size.1,
-            byte_len.expect("the exact frame retains its allocation"),
-            format
+            window, layout.width, layout.height, layout.byte_len, layout.format
         );
         if self.capture_mode == CaptureProbeMode::LiveContract
             && *frame_count < LIVE_CONTRACT_FRAME_LIMIT
-            && let Some(session) = capture_frame.session::<FrameData>()
         {
-            self.pending_recaptures.push(PendingRecapture {
-                session,
-                window: data.window_id.clone(),
-                size,
-                format,
-            });
+            self.pending_recaptures
+                .push(PendingCaptureRequest { window, layout });
         }
     }
 
-    fn failed(
-        &mut self,
-        _connection: &Connection,
-        _queue_handle: &QueueHandle<Self>,
-        capture_frame: &CaptureFrame,
-        reason: WEnum<FailureReason>,
-    ) {
-        let window_id = capture_frame_window_id(capture_frame);
-        if let Some(data) = capture_frame.data::<FrameData>() {
-            data.allocation.release();
-        }
-        self.capture_allocations.remove(&window_id);
-        self.note_capture_failure(&format!(
-            "SHM capture failed for Window {window_id}: {reason:?}"
-        ));
-    }
-}
-
-fn preferred_shm_format(formats: &[wl_shm::Format]) -> Option<wl_shm::Format> {
-    [
-        wl_shm::Format::Abgr8888,
-        wl_shm::Format::Argb8888,
-        wl_shm::Format::Xbgr8888,
-        wl_shm::Format::Xrgb8888,
-    ]
-    .into_iter()
-    .find(|candidate| formats.contains(candidate))
-}
-
-fn exact_frame_byte_len(width: u32, height: u32) -> Option<usize> {
-    usize::try_from(width)
-        .ok()?
-        .checked_mul(usize::try_from(height).ok()?)?
-        .checked_mul(4)
-}
-
-fn duration_to_timespec(duration: Duration) -> rustix::event::Timespec {
-    rustix::event::Timespec {
-        tv_sec: duration
-            .as_secs()
-            .try_into()
-            .expect("the Live Thumbnail probe duration fits in seconds"),
-        tv_nsec: duration.subsec_nanos().into(),
+    fn frame_failed(&mut self, capture_frame: &CaptureFrame) {
+        let window = ShmCaptureState::frame_window(capture_frame)
+            .unwrap_or_else(|| WindowId::from("<unknown>"));
+        self.capture_backend.fail_frame(capture_frame);
+        self.capture_backend.stop_stream(&window);
+        self.note_capture_failure(&format!("SHM capture failed for Window {window}"));
     }
 }
 
@@ -1324,6 +1080,16 @@ delegate_output!(Probe);
 delegate_registry!(Probe);
 delegate_seat!(Probe);
 delegate_shm!(Probe);
-cosmic_client_toolkit::delegate_screencopy!(Probe);
+wayland_client::delegate_dispatch!(Probe: [
+    ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1: GlobalData
+] => ShmCaptureState);
+wayland_client::delegate_dispatch!(Probe: [
+    ext_foreign_toplevel_image_capture_source_manager_v1::ExtForeignToplevelImageCaptureSourceManagerV1: GlobalData
+] => ShmCaptureState);
+wayland_client::delegate_dispatch!(Probe: [
+    ext_image_capture_source_v1::ExtImageCaptureSourceV1: GlobalData
+] => ShmCaptureState);
+wayland_client::delegate_dispatch!(Probe: [CaptureSession: CaptureSessionData] => ShmCaptureState);
+wayland_client::delegate_dispatch!(Probe: [CaptureFrame: CaptureFrameData] => ShmCaptureState);
 cosmic_client_toolkit::delegate_toplevel_manager!(Probe);
 delegate_noop!(Probe: ignore wl_buffer::WlBuffer);

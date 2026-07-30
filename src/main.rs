@@ -7,6 +7,7 @@ use cosmic_window_switcher::InvocationDirection;
 mod cosmic_session;
 mod probe;
 mod service;
+mod shm_capture;
 mod workspace_move_probe;
 
 #[derive(Debug, Parser)]
