@@ -16,8 +16,9 @@
 
 ## Comments
 
-- Implemented in commits `10e86c1` and `b479c66`.
+- Implemented in commits `10e86c1`, `b479c66`, and `e8b287a`.
 - Added `service` and `status` to the Command Surface with a single versioned user-session D-Bus name.
 - Preserved activation ordering even when compositor identity metadata arrives late.
 - Verified formatting, Clippy with warnings denied, service-scenario tests, the full test suite, and a release build.
+- Live COSMIC validation observed two Windows, transitioned from MRU Warm-up to accurate history after focusing both, kept the returned Window first, rejected a duplicate service instance, and showed no sustained idle CPU use.
 - Standards and specification review found no remaining requirements gap.
