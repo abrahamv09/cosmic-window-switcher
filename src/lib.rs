@@ -489,6 +489,49 @@ impl CardSize {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FractionalScale(u32);
+
+impl FractionalScale {
+    pub const UNITS_PER_ONE: u32 = 120;
+
+    #[must_use]
+    pub const fn from_protocol_units(units: u32) -> Self {
+        Self(if units == 0 { 1 } else { units })
+    }
+
+    #[must_use]
+    pub const fn from_integer(scale: u32) -> Self {
+        Self(if scale == 0 { 1 } else { scale }.saturating_mul(Self::UNITS_PER_ONE))
+    }
+
+    #[must_use]
+    pub const fn protocol_units(self) -> u32 {
+        self.0
+    }
+
+    #[must_use]
+    pub fn physical_length(self, logical: u32) -> u32 {
+        let scaled = u64::from(logical)
+            .saturating_mul(u64::from(self.0))
+            .div_ceil(u64::from(Self::UNITS_PER_ONE));
+        u32::try_from(scaled).unwrap_or(u32::MAX)
+    }
+
+    #[must_use]
+    pub fn physical_size(self, logical_width: u32, logical_height: u32) -> (u32, u32) {
+        (
+            self.physical_length(logical_width),
+            self.physical_length(logical_height),
+        )
+    }
+
+    #[must_use]
+    pub fn ceiling_integer(self) -> i32 {
+        i32::try_from(self.0.div_ceil(Self::UNITS_PER_ONE)).unwrap_or(i32::MAX)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridRect {
     x: u32,
     y: u32,
@@ -647,6 +690,16 @@ impl SwitcherGrid {
     pub fn window_at(&self, layout: &GridLayout, x: f64, y: f64) -> Option<&WindowId> {
         let item_index = layout.item_at(x, y)?;
         self.items.get(item_index).map(SwitcherItem::window)
+    }
+
+    #[must_use]
+    pub fn visible_windows(&self, layout: &GridLayout) -> Vec<WindowId> {
+        self.items
+            .get(layout.visible_item_range())
+            .unwrap_or_default()
+            .iter()
+            .map(|item| item.window().clone())
+            .collect()
     }
 
     /// Returns the item range for a viewport that scrolls only enough to keep
@@ -1185,13 +1238,12 @@ impl SwitcherService {
             }
         }
 
-        if let (Some(closed), Some(active_session)) = (closed, self.active_session.as_mut()) {
-            let effect = active_session.session.window_closed(&closed);
-            let (effects, finished) = active_session.translate_session_effect(effect);
-            if finished {
-                self.active_session = None;
-            }
-            return effects;
+        if let Some(closed) = closed
+            && self.active_session.is_some()
+        {
+            return self.apply_active_session_event(|active_session| {
+                active_session.session.window_closed(&closed)
+            });
         }
 
         Vec::new()
@@ -1234,17 +1286,23 @@ impl SwitcherService {
     }
 
     pub fn handle(&mut self, event: ServiceEvent) -> Vec<ServiceEffect> {
-        let Some(active_session) = self.active_session.as_mut() else {
+        if self.active_session.is_none() {
             return Vec::new();
-        };
+        }
 
         match event {
             ServiceEvent::SessionReadinessFailed => {
+                let Some(active_session) = self.active_session.as_ref() else {
+                    return Vec::new();
+                };
                 let direction = active_session.direction;
                 self.active_session = None;
                 vec![ServiceEffect::FallbackToStockSwitcher(direction)]
             }
             ServiceEvent::SessionReady => {
+                let Some(active_session) = self.active_session.as_mut() else {
+                    return Vec::new();
+                };
                 active_session.ready = true;
                 if let Some(window) = active_session.activation_after_readiness.take() {
                     self.active_session = None;
@@ -1259,6 +1317,9 @@ impl SwitcherService {
                 }
             }
             ServiceEvent::RevealDelayElapsed => {
+                let Some(active_session) = self.active_session.as_mut() else {
+                    return Vec::new();
+                };
                 active_session.reveal_due = true;
                 if active_session.ready && !active_session.revealed {
                     active_session.revealed = true;
@@ -1270,43 +1331,44 @@ impl SwitcherService {
                 }
             }
             ServiceEvent::HoldModifiersChanged(modifiers) => {
-                let effect = active_session
-                    .session
-                    .handle(SwitchingEvent::HoldModifiersChanged(modifiers));
-                let (effects, finished) = active_session.translate_session_effect(effect);
-                if finished {
-                    self.active_session = None;
-                }
-                effects
+                self.apply_active_session_event(|active_session| {
+                    active_session
+                        .session
+                        .handle(SwitchingEvent::HoldModifiersChanged(modifiers))
+                })
             }
-            ServiceEvent::Switching(event) => {
-                let effect = active_session.session.handle(event);
-                let (effects, finished) = active_session.translate_session_effect(effect);
-                if finished {
-                    self.active_session = None;
-                }
-                effects
-            }
+            ServiceEvent::Switching(event) => self
+                .apply_active_session_event(|active_session| active_session.session.handle(event)),
             ServiceEvent::Invocation(direction) => {
-                let effect = active_session.session.move_selection(direction);
-                let (effects, finished) = active_session.translate_session_effect(effect);
-                if finished {
-                    self.active_session = None;
-                }
-                effects
+                self.apply_active_session_event(|active_session| {
+                    active_session.session.move_selection(direction)
+                })
             }
             event @ (ServiceEvent::PointerEntered(_)
             | ServiceEvent::PointerMoved(_)
             | ServiceEvent::PointerPressed(_)
             | ServiceEvent::PointerReleased(_)) => {
-                let effect = active_session.handle_pointer_event(event);
-                let (effects, finished) = active_session.translate_session_effect(effect);
-                if finished {
-                    self.active_session = None;
-                }
-                effects
+                self.apply_active_session_event(|active_session| {
+                    active_session.handle_pointer_event(event)
+                })
             }
         }
+    }
+
+    fn apply_active_session_event(
+        &mut self,
+        event: impl FnOnce(&mut ActiveSession) -> SessionEffect,
+    ) -> Vec<ServiceEffect> {
+        let active_session = self
+            .active_session
+            .as_mut()
+            .expect("the active Switching Session was checked");
+        let effect = event(active_session);
+        let (effects, finished) = active_session.translate_session_effect(effect);
+        if finished {
+            self.active_session = None;
+        }
+        effects
     }
 
     #[must_use]

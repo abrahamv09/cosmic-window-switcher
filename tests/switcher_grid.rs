@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    CardSize, GridRect, SessionDisplay, SwitcherGrid, SwitcherItem, WindowId,
+    CardSize, FractionalScale, GridRect, SessionDisplay, SwitcherGrid, SwitcherItem, WindowId,
 };
 
 fn item(id: &str, application_id: &str, title: &str) -> SwitcherItem {
@@ -257,4 +257,12 @@ fn every_card_size_preset_remains_fixed_as_window_count_grows() {
         );
         assert!(layout.total_rows() > layout.visible_rows());
     }
+}
+
+#[test]
+fn fractional_scale_maps_logical_grid_geometry_to_exact_buffer_dimensions() {
+    let scale = FractionalScale::from_protocol_units(150);
+
+    assert_eq!(scale.physical_size(800, 600), (1_000, 750));
+    assert_eq!(scale.ceiling_integer(), 2);
 }

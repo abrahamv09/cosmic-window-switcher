@@ -52,10 +52,10 @@ use wayland_protocols::wp::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, GridLayout,
-    HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect,
-    ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem,
-    SwitchingEvent, WindowEvent, WindowId,
+    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, FractionalScale,
+    GridLayout, HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling,
+    ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout, SwitcherGrid,
+    SwitcherItem, SwitchingEvent, WindowEvent, WindowId,
 };
 
 use super::{
@@ -155,7 +155,7 @@ impl WindowObserver {
             grid_layout: None,
             fractional_scale: None,
             viewport: None,
-            preferred_scale_120: None,
+            preferred_scale: None,
             grid: None,
             session_window_order: Vec::new(),
             session_output: None,
@@ -294,7 +294,7 @@ struct ProtocolObserver {
     grid_layout: Option<GridLayout>,
     fractional_scale: Option<wp_fractional_scale_v1::WpFractionalScaleV1>,
     viewport: Option<wp_viewport::WpViewport>,
-    preferred_scale_120: Option<u32>,
+    preferred_scale: Option<FractionalScale>,
     grid: Option<SwitcherGrid>,
     session_window_order: Vec<WindowId>,
     session_output: Option<wl_output::WlOutput>,
@@ -407,7 +407,7 @@ impl ProtocolObserver {
             .viewporter
             .as_ref()
             .map(|viewporter| viewporter.get_viewport(layer.wl_surface(), queue_handle, ()));
-        self.preferred_scale_120 = None;
+        self.preferred_scale = None;
         layer.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
         layer.set_size(0, 0);
@@ -608,7 +608,7 @@ impl ProtocolObserver {
         self.grid_pool = None;
         self.grid_dimensions = None;
         self.grid_layout = None;
-        self.preferred_scale_120 = None;
+        self.preferred_scale = None;
         self.grid = None;
         self.accessibility.hide();
         self.session_window_order.clear();
@@ -753,13 +753,13 @@ impl ProtocolObserver {
             .logical_size
             .and_then(|(_, height)| u32::try_from(height).ok())
             .unwrap_or(800);
-        let output_scale_120 = u32::try_from(output_info.scale_factor.max(1))
-            .unwrap_or(1)
-            .saturating_mul(120);
-        let scale_120 = self
-            .preferred_scale_120
+        let output_scale = FractionalScale::from_integer(
+            u32::try_from(output_info.scale_factor.max(1)).unwrap_or(1),
+        );
+        let scale = self
+            .preferred_scale
             .filter(|_| self.viewport.is_some())
-            .unwrap_or(output_scale_120);
+            .unwrap_or(output_scale);
         let rendered = self.overlay_renderer.render(
             self.grid
                 .as_mut()
@@ -767,7 +767,7 @@ impl ProtocolObserver {
             surface_width,
             surface_height,
             self.session_card_size,
-            scale_120,
+            scale,
         )?;
         self.install_rendered_grid(rendered)
     }
@@ -808,12 +808,12 @@ impl ProtocolObserver {
         if !self.capture_backend.contract_available() && !layout.visible_item_range().is_empty() {
             bail!("the COSMIC Session does not expose required shared-memory capture protocols");
         }
-        let effects = self.capture_model.set_grid_viewport(
-            self.grid
-                .as_ref()
-                .context("the Switching Session has no Switcher Grid")?,
-            &layout,
-        );
+        let visible_windows = self
+            .grid
+            .as_ref()
+            .context("the Switching Session has no Switcher Grid")?
+            .visible_windows(&layout);
+        let effects = self.capture_model.set_visible(visible_windows);
         self.grid_layout = Some(layout);
         self.apply_capture_effects(effects)?;
         if self.interaction.visible {
@@ -879,7 +879,7 @@ impl CompositorHandler for ProtocolObserver {
             .layer
             .as_ref()
             .is_some_and(|layer| layer.wl_surface() == surface)
-            && self.preferred_scale_120.is_none()
+            && self.preferred_scale.is_none()
             && self.grid.is_some()
             && let Err(error) = self.render_grid()
         {
@@ -1256,10 +1256,11 @@ impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ()> for ProtocolObser
         else {
             return;
         };
-        if state.preferred_scale_120 == Some(preferred_scale) {
+        let preferred_scale = FractionalScale::from_protocol_units(preferred_scale);
+        if state.preferred_scale == Some(preferred_scale) {
             return;
         }
-        state.preferred_scale_120 = Some(preferred_scale);
+        state.preferred_scale = Some(preferred_scale);
         if state.grid.is_some()
             && let Err(error) = state.render_grid()
         {

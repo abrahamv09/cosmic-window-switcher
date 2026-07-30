@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    CaptureSessionModel, CardSize, HoldModifiers, InvocationDirection, InvocationRequest,
-    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SwitcherGrid, SwitcherItem,
-    SwitcherService, WindowEvent, WindowId,
+    CaptureEffect, CaptureSessionModel, CardSize, HoldModifiers, InvocationDirection,
+    InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SwitcherGrid,
+    SwitcherItem, SwitcherService, WindowEvent, WindowId,
 };
 
 fn window(id: &str) -> WindowId {
@@ -19,19 +19,24 @@ fn service_with_mru_order(ids: &[&str]) -> SwitcherService {
     service
 }
 
-fn synchronize_capture_viewport(
-    grid: &mut SwitcherGrid,
-    captures: &mut CaptureSessionModel,
-    effects: Vec<ServiceEffect>,
-) {
-    for effect in effects {
-        if let ServiceEffect::SelectionChanged(selected) = effect {
-            grid.select(&selected)
-                .expect("the service selection belongs to the Switcher Grid");
+struct FakePresentationAdapter {
+    grid: SwitcherGrid,
+    captures: CaptureSessionModel,
+}
+
+impl FakePresentationAdapter {
+    fn observe(&mut self, effects: Vec<ServiceEffect>) -> Vec<CaptureEffect> {
+        for effect in effects {
+            if let ServiceEffect::SelectionChanged(selected) = effect {
+                self.grid
+                    .select(&selected)
+                    .expect("the service selection belongs to the Switcher Grid");
+            }
         }
+        let layout = self.grid.layout(760, 548, CardSize::Medium);
+        self.captures
+            .set_visible(self.grid.visible_windows(&layout))
     }
-    let layout = grid.layout(760, 548, CardSize::Medium);
-    captures.set_grid_viewport(grid, &layout);
 }
 
 #[test]
@@ -334,46 +339,63 @@ fn keyboard_navigation_suspends_offscreen_capture_and_resumes_rows_when_revealed
         .collect::<Vec<_>>();
     let id_refs = ids.iter().map(String::as_str).collect::<Vec<_>>();
     let mut service = service_with_mru_order(&id_refs);
-    let mut grid = SwitcherGrid::new(
-        SessionDisplay::from("eDP-1"),
-        ids.iter().map(|id| {
-            SwitcherItem::new(window(id), "com.example.Application".to_owned(), id.clone())
-        }),
-        &window("window-1"),
-    )
-    .expect("the Initial Selection belongs to the Switcher Grid");
-    let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+    let mut presentation = FakePresentationAdapter {
+        grid: SwitcherGrid::new(
+            SessionDisplay::from("eDP-1"),
+            ids.iter().map(|id| {
+                SwitcherItem::new(window(id), "com.example.Application".to_owned(), id.clone())
+            }),
+            &window("window-1"),
+        )
+        .expect("the Initial Selection belongs to the Switcher Grid"),
+        captures: CaptureSessionModel::new(RefreshCeiling::Fps30),
+    };
     service.invoke(InvocationRequest {
         direction: InvocationDirection::Next,
         initial_hold_modifiers: HoldModifiers::ALT,
     });
-    synchronize_capture_viewport(&mut grid, &mut captures, Vec::new());
-
-    for _ in 0..5 {
-        let effects = service.handle(ServiceEvent::Invocation(InvocationDirection::Next));
-        synchronize_capture_viewport(&mut grid, &mut captures, effects);
-    }
-
     assert_eq!(
-        grid.items()
-            .iter()
-            .filter(|item| captures.is_active(item.window()))
-            .map(|item| item.window().as_str())
-            .collect::<Vec<_>>(),
-        ["window-4", "window-5", "window-6", "window-7"]
+        presentation.observe(Vec::new()),
+        (0..4)
+            .map(|index| CaptureEffect::CreateStream(window(&format!("window-{index}"))))
+            .collect::<Vec<_>>()
     );
 
+    let mut forward_capture_effects = Vec::new();
+    for _ in 0..5 {
+        let effects = service.handle(ServiceEvent::Invocation(InvocationDirection::Next));
+        forward_capture_effects.extend(presentation.observe(effects));
+    }
+    assert_eq!(
+        forward_capture_effects,
+        [
+            CaptureEffect::ReleaseStream(window("window-0")),
+            CaptureEffect::ReleaseStream(window("window-1")),
+            CaptureEffect::CreateStream(window("window-4")),
+            CaptureEffect::CreateStream(window("window-5")),
+            CaptureEffect::ReleaseStream(window("window-2")),
+            CaptureEffect::ReleaseStream(window("window-3")),
+            CaptureEffect::CreateStream(window("window-6")),
+            CaptureEffect::CreateStream(window("window-7")),
+        ]
+    );
+
+    let mut reverse_capture_effects = Vec::new();
     for _ in 0..5 {
         let effects = service.handle(ServiceEvent::Invocation(InvocationDirection::Previous));
-        synchronize_capture_viewport(&mut grid, &mut captures, effects);
+        reverse_capture_effects.extend(presentation.observe(effects));
     }
-
     assert_eq!(
-        grid.items()
-            .iter()
-            .filter(|item| captures.is_active(item.window()))
-            .map(|item| item.window().as_str())
-            .collect::<Vec<_>>(),
-        ["window-0", "window-1", "window-2", "window-3"]
+        reverse_capture_effects,
+        [
+            CaptureEffect::ReleaseStream(window("window-6")),
+            CaptureEffect::ReleaseStream(window("window-7")),
+            CaptureEffect::CreateStream(window("window-2")),
+            CaptureEffect::CreateStream(window("window-3")),
+            CaptureEffect::ReleaseStream(window("window-4")),
+            CaptureEffect::ReleaseStream(window("window-5")),
+            CaptureEffect::CreateStream(window("window-0")),
+            CaptureEffect::CreateStream(window("window-1")),
+        ]
     );
 }
