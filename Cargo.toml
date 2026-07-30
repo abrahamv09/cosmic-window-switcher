@@ -35,7 +35,7 @@ cosmic-text = "0.19.0"
 fluent-bundle = "0.16.0"
 freedesktop-icons = "0.4.0"
 image = { version = "0.25.8", default-features = false, features = ["png"] }
-libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe2902a52166492654bb9fee8a73d1", default-features = false, features = ["a11y", "tokio", "wayland"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe2902a52166492654bb9fee8a73d1", default-features = false, features = ["a11y", "smol", "wayland"] }
 resvg = { version = "0.45.1", default-features = false }
 rustix = { version = "1.1.4", features = ["event"] }
 serde = { version = "1.0.229", features = ["derive"] }

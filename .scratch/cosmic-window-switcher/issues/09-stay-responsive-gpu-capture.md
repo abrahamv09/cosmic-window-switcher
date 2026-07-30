@@ -40,3 +40,9 @@
   so the ticket is handed off as `ready-for-human` rather than marked resolved.
 - Final verification passed formatting, all-target type checking, strict
   all-target/all-feature Clippy, all 95 tests, and an optimized release build.
+- Manual restart exposed a latent runtime-feature conflict from the settings
+  implementation: libcosmic enabled zbus's Tokio backend while the resident
+  service uses zbus's blocking API. Switching libcosmic to its supported smol
+  executor kept the UI asynchronous and restored zbus's compatible async-io
+  backend. An isolated real-process D-Bus/Wayland startup reproduced the exact
+  reactor panic before the change and remained alive without a panic after it.
