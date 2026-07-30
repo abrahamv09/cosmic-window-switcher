@@ -162,10 +162,12 @@ Switching Session. When all rows do not fit, rendering follows the selected row
 so it remains visible.
 
 The overlay follows COSMIC high-contrast state and suppresses animation when
-the desktop reduced-motion policy is active. Its AT-SPI tree exposes localized
-English or Spanish names, selected state, set position and size, focus, and
-keyboard interaction instructions whenever assistive technology activates the
-tree.
+the standardized desktop Settings portal reports a reduced-motion preference.
+The current Pop!_OS 24.04 COSMIC portal does not yet publish that optional
+value, so the app-owned Animations toggle is the available motion control on
+that target. Its AT-SPI tree exposes localized English or Spanish names,
+selected state, set position and size, focus, and keyboard interaction
+instructions whenever assistive technology activates the tree.
 
 The default Window Scope is All Workspaces. Every independently exposed
 application Window enters one global MRU Order regardless of its workspace.

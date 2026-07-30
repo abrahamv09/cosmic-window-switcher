@@ -19,31 +19,26 @@ use cosmic_window_switcher::{
     StringKey, SwitcherPreferences,
 };
 
-const CARD_SIZES: [CardSize; 3] = [CardSize::Small, CardSize::Medium, CardSize::Large];
-const CARD_SIZE_KEYS: [StringKey; 3] = [StringKey::Small, StringKey::Medium, StringKey::Large];
-const DIMMING_LEVELS: [Dimming; 3] = [Dimming::Off, Dimming::Light, Dimming::Strong];
-const DIMMING_KEYS: [StringKey; 3] = [StringKey::Off, StringKey::Light, StringKey::Strong];
-const REFRESH_CEILINGS: [RefreshCeiling; 4] = [
-    RefreshCeiling::Fps15,
-    RefreshCeiling::Fps30,
-    RefreshCeiling::Fps60,
-    RefreshCeiling::MatchDisplay,
+const CARD_SIZE_OPTIONS: [(CardSize, StringKey); 3] = [
+    (CardSize::Small, StringKey::Small),
+    (CardSize::Medium, StringKey::Medium),
+    (CardSize::Large, StringKey::Large),
 ];
-const REFRESH_CEILING_KEYS: [StringKey; 4] = [
-    StringKey::Fps15,
-    StringKey::Fps30,
-    StringKey::Fps60,
-    StringKey::MatchDisplay,
+const DIMMING_OPTIONS: [(Dimming, StringKey); 3] = [
+    (Dimming::Off, StringKey::Off),
+    (Dimming::Light, StringKey::Light),
+    (Dimming::Strong, StringKey::Strong),
 ];
-const REVEAL_DELAYS: [RevealDelay; 3] = [
-    RevealDelay::Immediate,
-    RevealDelay::Milliseconds100,
-    RevealDelay::Milliseconds200,
+const REFRESH_CEILING_OPTIONS: [(RefreshCeiling, StringKey); 4] = [
+    (RefreshCeiling::Fps15, StringKey::Fps15),
+    (RefreshCeiling::Fps30, StringKey::Fps30),
+    (RefreshCeiling::Fps60, StringKey::Fps60),
+    (RefreshCeiling::MatchDisplay, StringKey::MatchDisplay),
 ];
-const REVEAL_DELAY_KEYS: [StringKey; 3] = [
-    StringKey::Immediate,
-    StringKey::Milliseconds100,
-    StringKey::Milliseconds200,
+const REVEAL_DELAY_OPTIONS: [(RevealDelay, StringKey); 3] = [
+    (RevealDelay::Immediate, StringKey::Immediate),
+    (RevealDelay::Milliseconds100, StringKey::Milliseconds100),
+    (RevealDelay::Milliseconds200, StringKey::Milliseconds200),
 ];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -75,8 +70,16 @@ fn bindings_for(configured: &shortcuts::Shortcuts, action: &Action) -> Vec<Strin
     bindings
 }
 
-fn localized_options(locale: Locale, keys: &[StringKey]) -> Vec<String> {
-    keys.iter().map(|key| locale.text(*key)).collect()
+fn localized_options<T>(locale: Locale, options: &[(T, StringKey)]) -> Vec<String> {
+    options.iter().map(|(_, key)| locale.text(*key)).collect()
+}
+
+fn option_position<T: PartialEq>(options: &[(T, StringKey)], selected: &T) -> Option<usize> {
+    options.iter().position(|(value, _)| value == selected)
+}
+
+fn option_value<T: Copy>(options: &[(T, StringKey)], index: usize, default: T) -> T {
+    options.get(index).map_or(default, |(value, _)| *value)
 }
 
 fn shortcut_label(bindings: &[String], not_assigned: &str) -> String {
@@ -173,8 +176,11 @@ impl cosmic::Application for SettingsApp {
                 self.preferences.clone().with_reveal_delay(reveal_delay)
             }
             Message::OpenKeyboardSettings => {
-                if let Err(error) = Command::new("cosmic-settings").arg("keyboard").spawn() {
-                    eprintln!("open COSMIC Keyboard Settings failed: {error}");
+                if Command::new("cosmic-settings")
+                    .arg("keyboard")
+                    .spawn()
+                    .is_err()
+                {
                     self.save_error = Some(self.locale.text(StringKey::OpenKeyboardSettingsFailed));
                 }
                 return Task::none();
@@ -186,8 +192,7 @@ impl cosmic::Application for SettingsApp {
                 self.preferences = next;
                 self.save_error = None;
             }
-            Err(error) => {
-                eprintln!("save Switcher Preferences failed: {error}");
+            Err(_) => {
                 self.save_error = Some(self.locale.text(StringKey::SaveFailed));
             }
         }
@@ -197,45 +202,38 @@ impl cosmic::Application for SettingsApp {
     fn view(&self) -> Element<'_, Self::Message> {
         let text = |key| self.locale.text(key);
         let card_size = dropdown(
-            localized_options(self.locale, &CARD_SIZE_KEYS),
-            CARD_SIZES
-                .iter()
-                .position(|size| *size == self.preferences.card_size()),
-            |index| Message::CardSize(CARD_SIZES.get(index).copied().unwrap_or(CardSize::Medium)),
+            localized_options(self.locale, &CARD_SIZE_OPTIONS),
+            option_position(&CARD_SIZE_OPTIONS, &self.preferences.card_size()),
+            |index| Message::CardSize(option_value(&CARD_SIZE_OPTIONS, index, CardSize::Medium)),
         );
         let dimming = dropdown(
-            localized_options(self.locale, &DIMMING_KEYS),
-            DIMMING_LEVELS
-                .iter()
-                .position(|dimming| *dimming == self.preferences.dimming()),
-            |index| Message::Dimming(DIMMING_LEVELS.get(index).copied().unwrap_or(Dimming::Light)),
+            localized_options(self.locale, &DIMMING_OPTIONS),
+            option_position(&DIMMING_OPTIONS, &self.preferences.dimming()),
+            |index| Message::Dimming(option_value(&DIMMING_OPTIONS, index, Dimming::Light)),
         );
         let refresh_ceiling = dropdown(
-            localized_options(self.locale, &REFRESH_CEILING_KEYS),
-            REFRESH_CEILINGS
-                .iter()
-                .position(|ceiling| *ceiling == self.preferences.refresh_ceiling()),
+            localized_options(self.locale, &REFRESH_CEILING_OPTIONS),
+            option_position(
+                &REFRESH_CEILING_OPTIONS,
+                &self.preferences.refresh_ceiling(),
+            ),
             |index| {
-                Message::RefreshCeiling(
-                    REFRESH_CEILINGS
-                        .get(index)
-                        .copied()
-                        .unwrap_or(RefreshCeiling::Fps30),
-                )
+                Message::RefreshCeiling(option_value(
+                    &REFRESH_CEILING_OPTIONS,
+                    index,
+                    RefreshCeiling::Fps30,
+                ))
             },
         );
         let reveal_delay = dropdown(
-            localized_options(self.locale, &REVEAL_DELAY_KEYS),
-            REVEAL_DELAYS
-                .iter()
-                .position(|delay| *delay == self.preferences.reveal_delay()),
+            localized_options(self.locale, &REVEAL_DELAY_OPTIONS),
+            option_position(&REVEAL_DELAY_OPTIONS, &self.preferences.reveal_delay()),
             |index| {
-                Message::RevealDelay(
-                    REVEAL_DELAYS
-                        .get(index)
-                        .copied()
-                        .unwrap_or(RevealDelay::Milliseconds100),
-                )
+                Message::RevealDelay(option_value(
+                    &REVEAL_DELAY_OPTIONS,
+                    index,
+                    RevealDelay::Milliseconds100,
+                ))
             },
         );
 

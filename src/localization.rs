@@ -23,6 +23,7 @@ fn bundle(language: &str, source: &str) -> Bundle {
     let resource = FluentResource::try_new(source.to_owned())
         .expect("built-in Fluent resource contains no syntax errors");
     let mut bundle = FluentBundle::new_concurrent(vec![language]);
+    bundle.set_use_isolating(false);
     bundle
         .add_resource(resource)
         .expect("built-in Fluent resource has unique message identifiers");
@@ -153,6 +154,26 @@ string_keys!(
     SavedForNextSession => "saved-for-next-session",
     SaveFailed => "save-failed",
     OpenKeyboardSettingsFailed => "open-keyboard-settings-failed",
+    UntitledWindow => "untitled-window",
+    CliAbout => "cli-about",
+    CliService => "cli-service",
+    CliStatus => "cli-status",
+    CliSettings => "cli-settings",
+    CliInvoke => "cli-invoke",
+    CliNext => "cli-next",
+    CliPrevious => "cli-previous",
+    CliProbe => "cli-probe",
+    CliIncludeTitles => "cli-include-titles",
+    CliLiveThumbnails => "cli-live-thumbnails",
+    CliProbeWorkspaceMove => "cli-probe-workspace-move",
+    CliWindow => "cli-window",
+    CliWorkspace => "cli-workspace",
+    CliOutput => "cli-output",
+    CliUsageHeading => "cli-usage-heading",
+    CliCommandsHeading => "cli-commands-heading",
+    CliOptionsHeading => "cli-options-heading",
+    CliHelpOption => "cli-help-option",
+    CliVersionOption => "cli-version-option",
     Service => "service",
     Running => "running",
     MruHistory => "mru-history",

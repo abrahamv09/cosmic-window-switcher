@@ -101,10 +101,13 @@ fn cosmic_accessibility_policy() -> AccessibilityPolicy {
         .theme_type
         .is_high_contrast();
     let reduced_motion = portal_reduced_motion_preference() == Some(1);
-    AccessibilityPolicy::new(false, high_contrast, reduced_motion)
+    AccessibilityPolicy::new(high_contrast, reduced_motion)
 }
 
 fn portal_reduced_motion_preference() -> Option<u32> {
+    // COSMIC does not currently publish an app-specific reduced-motion key.
+    // Follow the cross-desktop Settings portal so the switcher picks up the
+    // policy as soon as the installed COSMIC portal backend exposes it.
     let connection = zbus::blocking::Connection::session().ok()?;
     let proxy = zbus::blocking::Proxy::new(
         &connection,
@@ -1115,15 +1118,17 @@ impl ProtocolObserver {
                 .name
                 .unwrap_or_else(|| format!("output-{}", output_info.id)),
         );
+        let locale = Locale::detect();
         let items = self
             .session_window_order
             .iter()
             .map(|id| {
                 self.observed_window(id).map(|window| {
-                    SwitcherItem::new(
+                    SwitcherItem::new_localized(
                         id.clone(),
                         window.application_id.clone(),
                         window.title.clone(),
+                        locale,
                     )
                 })
             })

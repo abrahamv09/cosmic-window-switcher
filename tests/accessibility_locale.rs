@@ -81,6 +81,22 @@ fn switcher_items_expose_name_selection_position_and_localized_instructions() {
 }
 
 #[test]
+fn an_untitled_window_uses_a_localized_accessible_fallback() {
+    let item = SwitcherItem::new_localized(
+        WindowId::from("untitled"),
+        String::new(),
+        String::new(),
+        Locale::Spanish,
+    );
+
+    assert_eq!(item.title(), "Ventana sin título");
+    assert_eq!(
+        item.accessibility(Locale::Spanish).name(),
+        "Ventana sin título"
+    );
+}
+
+#[test]
 fn accessibility_policy_overrides_presentation_without_mutating_preferences() {
     let preferences = SwitcherPreferences::new(
         CardSize::Large,
@@ -91,8 +107,7 @@ fn accessibility_policy_overrides_presentation_without_mutating_preferences() {
     );
     let session = preferences.snapshot();
 
-    let presentation =
-        OverlayPresentation::resolve(&session, AccessibilityPolicy::new(true, true, true));
+    let presentation = OverlayPresentation::resolve(&session, AccessibilityPolicy::new(true, true));
 
     assert!(presentation.high_contrast());
     assert!(!presentation.animations_enabled());
@@ -104,10 +119,8 @@ fn accessibility_policy_overrides_presentation_without_mutating_preferences() {
 #[test]
 fn animation_preference_drives_a_short_reveal_fade_and_reduced_motion_skips_it() {
     let session = SwitcherPreferences::default().snapshot();
-    let animated =
-        OverlayPresentation::resolve(&session, AccessibilityPolicy::new(false, false, false));
-    let reduced =
-        OverlayPresentation::resolve(&session, AccessibilityPolicy::new(false, false, true));
+    let animated = OverlayPresentation::resolve(&session, AccessibilityPolicy::new(false, false));
+    let reduced = OverlayPresentation::resolve(&session, AccessibilityPolicy::new(false, true));
 
     assert_eq!(animated.reveal_opacity(Duration::ZERO), 0);
     assert!(animated.reveal_opacity(Duration::from_millis(75)) > 0);

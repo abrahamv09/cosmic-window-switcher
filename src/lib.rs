@@ -373,9 +373,19 @@ pub struct SwitcherItem {
 impl SwitcherItem {
     #[must_use]
     pub fn new(window: WindowId, application_id: String, title: String) -> Self {
+        Self::new_localized(window, application_id, title, Locale::English)
+    }
+
+    #[must_use]
+    pub fn new_localized(
+        window: WindowId,
+        application_id: String,
+        title: String,
+        locale: Locale,
+    ) -> Self {
         let title = if title.trim().is_empty() {
             if application_id.trim().is_empty() {
-                "Untitled Window".to_owned()
+                locale.text(StringKey::UntitledWindow)
             } else {
                 application_id.clone()
             }
@@ -1358,82 +1368,7 @@ fn localized_failure(
 
 impl fmt::Display for ServiceDiagnostics {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mru_history = match self.mru_history {
-            MruHistoryAccuracy::WarmUp => "warm-up",
-            MruHistoryAccuracy::Accurate => "accurate",
-        };
-        write!(
-            formatter,
-            "service: running\nmru_history: {mru_history}\nwindow_count: {}\nwindow_scope: \
-             {}\nworkspace_filtering: {}",
-            self.mru_order.len(),
-            match self.window_scope {
-                WindowScope::AllWorkspaces => "all-workspaces",
-                WindowScope::VisibleWorkspaces => "visible-workspaces",
-            },
-            match self.window_scope {
-                WindowScope::AllWorkspaces => "not-required",
-                WindowScope::VisibleWorkspaces => "required",
-            }
-        )?;
-        match self.workspace_eligibility {
-            WorkspaceEligibilityState::AwaitingSnapshot => {
-                formatter.write_str("\nworkspace_eligibility: awaiting-snapshot")?;
-            }
-            WorkspaceEligibilityState::Ready => {
-                formatter.write_str("\nworkspace_eligibility: ready")?;
-            }
-            WorkspaceEligibilityState::MissingToplevelInfo {
-                advertised_version,
-                required_version,
-            } => {
-                let advertised_version = advertised_version.map_or_else(
-                    || "not-advertised".to_owned(),
-                    |version| format!("v{version}"),
-                );
-                write!(
-                    formatter,
-                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
-                     zcosmic_toplevel_info_v1 {advertised_version}; v{required_version} required"
-                )?;
-            }
-            WorkspaceEligibilityState::MissingWorkspaceProtocol {
-                advertised_version,
-                required_version,
-            } => {
-                let advertised_version = advertised_version.map_or_else(
-                    || "not-advertised".to_owned(),
-                    |version| format!("v{version}"),
-                );
-                write!(
-                    formatter,
-                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
-                     ext_workspace_manager_v1 {advertised_version}; v{required_version} required"
-                )?;
-            }
-            WorkspaceEligibilityState::MissingWorkspaceSnapshot { advertised_version } => {
-                write!(
-                    formatter,
-                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
-                     ext_workspace_manager_v1 v{advertised_version} emitted no committed snapshot"
-                )?;
-            }
-            WorkspaceEligibilityState::MissingToplevelMembership { advertised_version } => {
-                write!(
-                    formatter,
-                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
-                     zcosmic_toplevel_info_v1 v{advertised_version} emitted no committed \
-                     ext-workspace membership snapshot"
-                )?;
-            }
-        }
-        if !self.mru_order.is_empty() {
-            formatter.write_str("\nmru_order:")?;
-            for (position, id) in self.mru_order.iter().enumerate() {
-                write!(formatter, "\n  {}. {id}", position + 1)?;
-            }
-        }
-        Ok(())
+        formatter.write_str(&self.localized(Locale::English))
     }
 }
 

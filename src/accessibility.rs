@@ -7,28 +7,17 @@ pub const REVEAL_ANIMATION_DURATION: Duration = Duration::from_millis(150);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AccessibilityPolicy {
-    screen_reader_active: bool,
     high_contrast: bool,
     reduced_motion: bool,
 }
 
 impl AccessibilityPolicy {
     #[must_use]
-    pub const fn new(
-        screen_reader_active: bool,
-        high_contrast: bool,
-        reduced_motion: bool,
-    ) -> Self {
+    pub const fn new(high_contrast: bool, reduced_motion: bool) -> Self {
         Self {
-            screen_reader_active,
             high_contrast,
             reduced_motion,
         }
-    }
-
-    #[must_use]
-    pub const fn screen_reader_active(self) -> bool {
-        self.screen_reader_active
     }
 
     #[must_use]
