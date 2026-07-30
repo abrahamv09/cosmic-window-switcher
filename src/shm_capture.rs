@@ -457,17 +457,20 @@ where
                 }
             }
             ext_image_copy_capture_session_v1::Event::Done => {
-                let constraints = data
-                    .constraints
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let constraints = {
+                    let mut pending = data
+                        .constraints
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    std::mem::take(&mut *pending)
+                };
                 state.constraints_ready(
                     queue_handle,
                     session,
                     ShmConstraints {
                         width: constraints.size.0,
                         height: constraints.size.1,
-                        formats: constraints.formats.clone(),
+                        formats: constraints.formats,
                     },
                 );
             }
