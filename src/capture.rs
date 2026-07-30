@@ -147,7 +147,11 @@ impl ThumbnailFrame {
     #[must_use]
     pub fn fitted_size(&self, maximum_width: u32, maximum_height: u32) -> (u32, u32) {
         let (presentation_width, presentation_height) = self.presentation_size();
-        if maximum_width == 0 || maximum_height == 0 {
+        if presentation_width == 0
+            || presentation_height == 0
+            || maximum_width == 0
+            || maximum_height == 0
+        {
             return (0, 0);
         }
         let source_width = u64::from(presentation_width);

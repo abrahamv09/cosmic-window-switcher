@@ -307,3 +307,21 @@ fn every_compositor_transform_uses_one_consistent_geometry() {
         assert_eq!(actual_pixels, expected_pixels, "{transform:?}");
     }
 }
+
+#[test]
+fn malformed_zero_sized_frame_fits_to_nothing_without_panicking() {
+    let frame = ThumbnailFrame::new(
+        ShmFrameLayout {
+            width: 0,
+            height: 0,
+            stride: 0,
+            byte_len: 0,
+            format: ShmFormat::Argb8888,
+        },
+        Vec::new(),
+    )
+    .expect("the direct frame constructor accepts an exact empty allocation");
+
+    assert_eq!(frame.fitted_size(100, 100), (0, 0));
+    assert_eq!(frame.argb_pixel(0, 0), None);
+}
