@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use zbus::{
     blocking::{Connection, Proxy, connection},
+    fdo::{RequestNameFlags, RequestNameReply},
     zvariant::Type,
 };
 
@@ -16,14 +17,19 @@ const OBJECT_PATH: &str = "/io/github/abrahamv09/CosmicWindowSwitcher";
 const INTERFACE_NAME: &str = "io.github.abrahamv09.CosmicWindowSwitcher1";
 
 pub(super) fn serve(service: SharedService) -> Result<Connection> {
-    connection::Builder::session()
+    let connection = connection::Builder::session()
         .context("connect to the user-session D-Bus")?
         .serve_at(OBJECT_PATH, DiagnosticsInterface { service })
         .context("register the Switcher Service D-Bus interface")?
-        .name(BUS_NAME)
-        .context("request the single Switcher Service D-Bus name")?
         .build()
-        .context("start the Switcher Service D-Bus connection")
+        .context("start the Switcher Service D-Bus connection")?;
+    let reply = connection
+        .request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into())
+        .context("request the single Switcher Service D-Bus name")?;
+    if reply != RequestNameReply::PrimaryOwner && reply != RequestNameReply::AlreadyOwner {
+        anyhow::bail!("another Switcher Service already owns the user-session D-Bus name");
+    }
+    Ok(connection)
 }
 
 pub(super) fn status() -> Result<ServiceDiagnostics> {

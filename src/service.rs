@@ -15,9 +15,9 @@ pub fn run() -> Result<()> {
     crate::cosmic_session::verify("Switcher Service")?;
 
     let service = Arc::new(RwLock::new(SwitcherService::new()));
+    let _bus_connection = diagnostics::serve(Arc::clone(&service))?;
     let mut window_observer = window_observer::WindowObserver::connect(Arc::clone(&service))?;
     window_observer.synchronize_initial_windows()?;
-    let _bus_connection = diagnostics::serve(service)?;
 
     loop {
         window_observer.dispatch()?;
