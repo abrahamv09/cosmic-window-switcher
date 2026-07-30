@@ -57,7 +57,7 @@ use cosmic_window_switcher::{
     APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, DesktopSnapshot,
     FractionalScale, GridLayout, HoldModifiers, InvocationDirection, InvocationRequest,
     RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout,
-    SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowSnapshot,
+    SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowScope, WindowSnapshot,
     WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
@@ -418,12 +418,13 @@ impl ProtocolObserver {
             return;
         }
 
-        let complete_mru_order = self
+        let diagnostics = self
             .service
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .diagnostics()
-            .mru_order;
+            .diagnostics();
+        let complete_mru_order = diagnostics.mru_order;
+        let window_scope = diagnostics.window_scope;
         if complete_mru_order.len() < 2 {
             return;
         }
@@ -442,7 +443,7 @@ impl ProtocolObserver {
         }
         let Some(context) = self
             .desktop_snapshot()
-            .switching_context(complete_mru_order.clone())
+            .switching_context(window_scope, complete_mru_order.clone())
         else {
             self.fallback(direction);
             return;
@@ -460,6 +461,12 @@ impl ProtocolObserver {
                 })
             })
             .cloned()
+            .or_else(|| {
+                self.output_state.outputs().find(|output| {
+                    self.output_display(output)
+                        .is_some_and(|display| display == context.session_display)
+                })
+            })
         else {
             self.fallback(direction);
             return;
@@ -753,9 +760,16 @@ impl ProtocolObserver {
 
     fn await_toplevel_snapshot(&mut self) {
         self.toplevel_snapshot_received = false;
-        if self
-            .advertised_toplevel_info_version
-            .is_some_and(|version| version >= REQUIRED_TOPLEVEL_INFO_VERSION)
+        let workspace_filtering_required = self
+            .service
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .window_scope()
+            == WindowScope::VisibleWorkspaces;
+        if workspace_filtering_required
+            && self
+                .advertised_toplevel_info_version
+                .is_some_and(|version| version >= REQUIRED_TOPLEVEL_INFO_VERSION)
             && self
                 .advertised_workspace_manager_version
                 .is_some_and(|version| version >= REQUIRED_WORKSPACE_MANAGER_VERSION)
@@ -2068,7 +2082,7 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use cosmic_window_switcher::{
-        MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId,
+        MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId, WindowScope,
         WorkspaceEligibilityState,
     };
 
@@ -2115,6 +2129,7 @@ mod tests {
             ServiceDiagnostics {
                 mru_history: MruHistoryAccuracy::WarmUp,
                 mru_order: vec![WindowId::from("activated"), WindowId::from("delayed")],
+                window_scope: WindowScope::AllWorkspaces,
                 workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
             }
         );

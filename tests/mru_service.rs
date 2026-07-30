@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId,
+    MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId, WindowScope,
     WorkspaceEligibilityState,
 };
 
@@ -25,6 +25,7 @@ fn observed_focus_sequence_produces_current_first_mru_order() {
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("gamma"), window("beta"), window("alpha")],
+            window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
         }
     );
@@ -61,6 +62,7 @@ fn closed_windows_disappear_without_reordering_survivors() {
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("gamma"), window("alpha")],
+            window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
         }
     );
@@ -85,6 +87,7 @@ fn restart_reports_warm_up_with_current_first_and_stable_discovery_order() {
                 window("unknown-first"),
                 window("unknown-second"),
             ],
+            window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
         }
     );
@@ -107,6 +110,7 @@ fn reused_identity_does_not_inherit_the_closed_windows_recency() {
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("survivor"), window("reused")],
+            window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
         }
     );
@@ -126,6 +130,7 @@ fn newly_discovered_window_gets_deterministic_placement_without_losing_accuracy(
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("current"), window("new-background-window")],
+            window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
         }
     );
@@ -136,6 +141,7 @@ fn status_diagnostics_report_mru_warm_up_without_window_titles() {
     let diagnostics = ServiceDiagnostics {
         mru_history: MruHistoryAccuracy::WarmUp,
         mru_order: vec![window("opaque-a"), window("opaque-b")],
+        window_scope: WindowScope::AllWorkspaces,
         workspace_eligibility: WorkspaceEligibilityState::MissingToplevelMembership {
             advertised_version: 3,
         },
@@ -143,7 +149,7 @@ fn status_diagnostics_report_mru_warm_up_without_window_titles() {
 
     assert_eq!(
         diagnostics.to_string(),
-        "service: running\nmru_history: warm-up\nwindow_count: 2\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot\nmru_order:\n  1. opaque-a\n  2. opaque-b"
+        "service: running\nmru_history: warm-up\nwindow_count: 2\nwindow_scope: all-workspaces\nworkspace_filtering: not-required\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot\nmru_order:\n  1. opaque-a\n  2. opaque-b"
     );
 }
 
@@ -152,6 +158,7 @@ fn status_diagnostics_report_missing_or_incompatible_workspace_protocols() {
     let missing = ServiceDiagnostics {
         mru_history: MruHistoryAccuracy::WarmUp,
         mru_order: Vec::new(),
+        window_scope: WindowScope::AllWorkspaces,
         workspace_eligibility: WorkspaceEligibilityState::MissingToplevelInfo {
             advertised_version: None,
             required_version: 3,
@@ -160,6 +167,7 @@ fn status_diagnostics_report_missing_or_incompatible_workspace_protocols() {
     let incompatible = ServiceDiagnostics {
         mru_history: MruHistoryAccuracy::Accurate,
         mru_order: Vec::new(),
+        window_scope: WindowScope::AllWorkspaces,
         workspace_eligibility: WorkspaceEligibilityState::MissingWorkspaceProtocol {
             advertised_version: Some(0),
             required_version: 1,

@@ -953,6 +953,13 @@ pub struct WindowSnapshot {
     pub sticky: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowScope {
+    #[default]
+    AllWorkspaces,
+    VisibleWorkspaces,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DesktopSnapshot {
     pub workspace_groups: Vec<WorkspaceGroupSnapshot>,
@@ -969,11 +976,14 @@ pub struct SwitchingContext {
 impl DesktopSnapshot {
     /// Derives the immutable Window and display snapshot for one invocation.
     ///
-    /// Returns `None` when the initially focused Window has no output, because
-    /// the sole Switcher Grid cannot then be placed on a Session Display.
+    /// All Workspaces falls back to a deterministic workspace-group output
+    /// when the focused Window has no output membership. Visible Workspaces
+    /// returns `None` in that case because it requires an authoritative Session
+    /// Display.
     #[must_use]
     pub fn switching_context(
         &self,
+        scope: WindowScope,
         mru_order: impl IntoIterator<Item = WindowId>,
     ) -> Option<SwitchingContext> {
         let mru_order = mru_order.into_iter().collect::<Vec<_>>();
@@ -983,7 +993,16 @@ impl DesktopSnapshot {
             .iter()
             .find(|window| window.id == *focused)?
             .session_display
-            .clone()?;
+            .clone()
+            .or_else(|| {
+                (scope == WindowScope::AllWorkspaces).then(|| {
+                    self.workspace_groups
+                        .iter()
+                        .flat_map(|group| &group.outputs)
+                        .min_by_key(|display| display.as_str())
+                        .cloned()
+                })?
+            })?;
         let visible_workspaces = self
             .workspace_groups
             .iter()
@@ -1000,7 +1019,8 @@ impl DesktopSnapshot {
             .filter(|id| {
                 self.windows.iter().any(|window| {
                     window.id == *id
-                        && (window.sticky
+                        && (scope == WindowScope::AllWorkspaces
+                            || window.sticky
                             || window
                                 .workspace_membership
                                 .iter()
@@ -1183,6 +1203,7 @@ pub enum WorkspaceEligibilityState {
 pub struct ServiceDiagnostics {
     pub mru_history: MruHistoryAccuracy,
     pub mru_order: Vec<WindowId>,
+    pub window_scope: WindowScope,
     pub workspace_eligibility: WorkspaceEligibilityState,
 }
 
@@ -1194,8 +1215,17 @@ impl fmt::Display for ServiceDiagnostics {
         };
         write!(
             formatter,
-            "service: running\nmru_history: {mru_history}\nwindow_count: {}",
-            self.mru_order.len()
+            "service: running\nmru_history: {mru_history}\nwindow_count: {}\nwindow_scope: \
+             {}\nworkspace_filtering: {}",
+            self.mru_order.len(),
+            match self.window_scope {
+                WindowScope::AllWorkspaces => "all-workspaces",
+                WindowScope::VisibleWorkspaces => "visible-workspaces",
+            },
+            match self.window_scope {
+                WindowScope::AllWorkspaces => "not-required",
+                WindowScope::VisibleWorkspaces => "required",
+            }
         )?;
         match self.workspace_eligibility {
             WorkspaceEligibilityState::AwaitingSnapshot => {
@@ -1356,6 +1386,7 @@ pub struct SwitcherService {
     windows: Vec<TrackedWindow>,
     initial_discovery_complete: bool,
     active_session: Option<ActiveSession>,
+    window_scope: WindowScope,
     workspace_eligibility: WorkspaceEligibilityState,
 }
 
@@ -1366,6 +1397,7 @@ impl SwitcherService {
             windows: Vec::new(),
             initial_discovery_complete: false,
             active_session: None,
+            window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
         }
     }
@@ -1378,11 +1410,23 @@ impl SwitcherService {
         self.workspace_eligibility = state;
     }
 
+    pub const fn set_window_scope(&mut self, scope: WindowScope) {
+        self.window_scope = scope;
+    }
+
+    #[must_use]
+    pub const fn window_scope(&self) -> WindowScope {
+        self.window_scope
+    }
+
     #[must_use]
     pub const fn workspace_invocation_fallback(
         &self,
         direction: InvocationDirection,
     ) -> Option<ServiceEffect> {
+        if matches!(self.window_scope, WindowScope::AllWorkspaces) {
+            return None;
+        }
         match self.workspace_eligibility {
             WorkspaceEligibilityState::Ready => None,
             WorkspaceEligibilityState::AwaitingSnapshot
@@ -1567,6 +1611,7 @@ impl SwitcherService {
                 .iter()
                 .map(|window| window.id.clone())
                 .collect(),
+            window_scope: self.window_scope,
             workspace_eligibility: self.workspace_eligibility,
         }
     }

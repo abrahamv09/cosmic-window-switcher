@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    DesktopSnapshot, SessionDisplay, WindowId, WindowSnapshot, WorkspaceGroupSnapshot, WorkspaceId,
-    WorkspaceSnapshot,
+    DesktopSnapshot, SessionDisplay, WindowId, WindowScope, WindowSnapshot, WorkspaceGroupSnapshot,
+    WorkspaceId, WorkspaceSnapshot,
 };
 
 fn window(id: &str) -> WindowId {
@@ -56,11 +56,14 @@ fn spanning_workspace_includes_its_windows_across_all_displays_in_mru_order() {
     };
 
     let context = snapshot
-        .switching_context([
-            window("focused"),
-            window("hidden-workspace"),
-            window("other-display"),
-        ])
+        .switching_context(
+            WindowScope::VisibleWorkspaces,
+            [
+                window("focused"),
+                window("hidden-workspace"),
+                window("other-display"),
+            ],
+        )
         .expect("the initially focused Window has a Session Display");
 
     assert_eq!(
@@ -68,6 +71,56 @@ fn spanning_workspace_includes_its_windows_across_all_displays_in_mru_order() {
         vec![window("focused"), window("other-display")]
     );
     assert_eq!(context.session_display, display("HDMI-A-1"));
+}
+
+#[test]
+fn all_workspaces_includes_hidden_workspace_windows_and_uses_a_group_output_fallback() {
+    let mut focused = task_window("focused", &[], &[]);
+    focused.session_display = None;
+    let snapshot = DesktopSnapshot {
+        workspace_groups: vec![WorkspaceGroupSnapshot {
+            outputs: vec![display("eDP-1")],
+            workspaces: vec![workspace("visible"), workspace("hidden")],
+        }],
+        workspaces: vec![
+            WorkspaceSnapshot {
+                id: workspace("visible"),
+                active: true,
+                hidden: false,
+            },
+            WorkspaceSnapshot {
+                id: workspace("hidden"),
+                active: false,
+                hidden: false,
+            },
+        ],
+        windows: vec![
+            focused,
+            task_window("hidden-workspace", &[], &[]),
+            task_window("visible-workspace", &[], &[]),
+        ],
+    };
+
+    let context = snapshot
+        .switching_context(
+            WindowScope::AllWorkspaces,
+            [
+                window("focused"),
+                window("hidden-workspace"),
+                window("visible-workspace"),
+            ],
+        )
+        .expect("an assigned workspace-group output provides the Session Display");
+
+    assert_eq!(
+        context.eligible_windows,
+        vec![
+            window("focused"),
+            window("hidden-workspace"),
+            window("visible-workspace"),
+        ]
+    );
+    assert_eq!(context.session_display, display("eDP-1"));
 }
 
 #[test]
@@ -88,7 +141,10 @@ fn compositor_selected_session_display_wins_over_output_event_order() {
     };
 
     let context = snapshot
-        .switching_context([window("focused"), window("previous")])
+        .switching_context(
+            WindowScope::VisibleWorkspaces,
+            [window("focused"), window("previous")],
+        )
         .expect("the compositor selected a Session Display");
 
     assert_eq!(context.session_display, display("right"));
@@ -138,12 +194,15 @@ fn separate_display_groups_include_each_active_workspace() {
     };
 
     let context = snapshot
-        .switching_context([
-            window("focused"),
-            window("external-hidden"),
-            window("external"),
-            window("laptop-hidden"),
-        ])
+        .switching_context(
+            WindowScope::VisibleWorkspaces,
+            [
+                window("focused"),
+                window("external-hidden"),
+                window("external"),
+                window("laptop-hidden"),
+            ],
+        )
         .expect("the focused Window identifies the Session Display");
 
     assert_eq!(
@@ -177,12 +236,15 @@ fn minimized_dialog_utility_and_mixed_window_types_share_eligibility() {
     };
 
     let context = snapshot
-        .switching_context([
-            window("minimized-native"),
-            window("fullscreen-xwayland"),
-            window("dialog"),
-            window("utility"),
-        ])
+        .switching_context(
+            WindowScope::VisibleWorkspaces,
+            [
+                window("minimized-native"),
+                window("fullscreen-xwayland"),
+                window("dialog"),
+                window("utility"),
+            ],
+        )
         .expect("the focused Window identifies the Session Display");
 
     assert_eq!(
@@ -227,13 +289,13 @@ fn a_cosmic_workspace_policy_change_affects_the_next_context_only() {
         window("second-only"),
     ];
     let first_context = snapshot
-        .switching_context(mru_order.clone())
+        .switching_context(WindowScope::VisibleWorkspaces, mru_order.clone())
         .expect("the focused Window identifies the Session Display");
 
     snapshot.workspaces[0].active = false;
     snapshot.workspaces[1].active = true;
     let second_context = snapshot
-        .switching_context(mru_order)
+        .switching_context(WindowScope::VisibleWorkspaces, mru_order)
         .expect("the focused Window identifies the Session Display");
 
     assert_eq!(

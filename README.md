@@ -7,8 +7,8 @@ observes Window focus metadata throughout a COSMIC Session and keeps the current
 MRU Order without opening a visible Window or starting thumbnail capture. Its
 quick-switch path captures the initial hold modifiers, selects in the requested
 MRU direction, and activates on release without flashing an overlay. Longer
-holds reveal a native icon-and-title Switcher Grid on the display containing the
-initially focused Window.
+holds reveal a native icon-and-title Switcher Grid on the best available
+Session Display.
 
 The stable application identity is
 `io.github.abrahamv09.CosmicWindowSwitcher`. The project is licensed under
@@ -138,30 +138,33 @@ reordering survivors, while Windows opened during switching wait for the next
 Switching Session. When all rows do not fit, rendering follows the selected row
 so it remains visible.
 
-At each invocation, the service derives the Visible Workspace Set from live
+The default Window Scope is All Workspaces. Every independently exposed
+application Window enters one global MRU Order regardless of its workspace.
+Minimized Windows, dialogs and utilities, Native Wayland Windows, and
+compositor-managed XWayland Windows remain eligible. Layer-shell panels, docks,
+menus, notifications, and overlays never enter the foreign-toplevel Window
+registry.
+
+The visible-workspace derivation remains available in the domain model for a
+future stricter mode. It derives the Visible Workspace Set from live
 `ext-workspace` groups, their assigned outputs, active and hidden state, and
 each Window's committed COSMIC workspace membership. A spanning group includes
 its active workspace across every display; separate-display groups contribute
-the active workspace from each display. This is not a Switcher Preference, so a
-COSMIC Workspace Policy change affects the next Switching Session without a
-service restart. Minimized Windows, independently exposed dialogs and utility
-Windows, Native Wayland Windows, and compositor-managed XWayland Windows remain
-eligible. Layer-shell panels, docks, menus, notifications, and overlays never
-enter the foreign-toplevel Window registry.
+the active workspace from each display.
 
-The service creates exactly one overlay on the output containing the Window
-that was focused at invocation. Selecting a minimized Window uses COSMIC's
-normal activation request, which restores and focuses it. Activation does not
-issue any fullscreen-state request, so a fullscreen Window remains fullscreen.
+The service creates exactly one overlay. It prefers the output containing the
+Window that was focused at invocation; when COSMIC omits per-Window output
+membership, All Workspaces deterministically uses an output assigned to a
+workspace group. Selecting a minimized Window uses COSMIC's normal activation
+request, which restores and focuses it. Activation does not issue any
+fullscreen-state request, so a fullscreen Window remains fullscreen.
 
-Workspace eligibility is capability-gated. If COSMIC advertises toplevel-info
-v3 but does not provide a committed ext-workspace membership snapshot, the
-Switcher Service remains resident for MRU tracking and `status` reports
-`workspace_eligibility: unavailable`. Each Invocation Request then delegates to
-the stock switcher rather than guessing from stale configuration or showing an
-incorrect Window set. The packaged compositor build recorded in
-`.scratch/cosmic-window-switcher/upstream/` currently has this upstream
-limitation.
+`status` reports `window_scope: all-workspaces` and
+`workspace_filtering: not-required`. It continues to diagnose missing COSMIC
+workspace snapshots, but those snapshots do not block All Workspaces
+invocations. The packaged compositor limitation recorded in
+`.scratch/cosmic-window-switcher/upstream/` therefore does not force the custom
+switcher to delegate.
 
 If the grid cannot be rendered or targeted to the Session Display before
 Session Readiness times out, the resident service delegates that invocation to

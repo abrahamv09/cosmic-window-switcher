@@ -9,7 +9,7 @@ use zbus::{
 };
 
 use cosmic_window_switcher::{
-    InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics, WindowId,
+    InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics, WindowId, WindowScope,
     WorkspaceEligibilityState,
 };
 
@@ -56,6 +56,7 @@ pub(super) fn status() -> Result<ServiceDiagnostics> {
 struct DbusDiagnostics {
     mru_warm_up: bool,
     mru_order: Vec<String>,
+    window_scope: String,
     workspace_eligibility: String,
     advertised_version: u32,
     required_version: u32,
@@ -97,6 +98,11 @@ impl From<ServiceDiagnostics> for DbusDiagnostics {
                 .into_iter()
                 .map(|id| id.as_str().to_owned())
                 .collect(),
+            window_scope: match diagnostics.window_scope {
+                WindowScope::AllWorkspaces => "all-workspaces",
+                WindowScope::VisibleWorkspaces => "visible-workspaces",
+            }
+            .to_owned(),
             workspace_eligibility: workspace_eligibility.to_owned(),
             advertised_version,
             required_version,
@@ -117,6 +123,10 @@ impl From<DbusDiagnostics> for ServiceDiagnostics {
                 .into_iter()
                 .map(WindowId::from)
                 .collect(),
+            window_scope: match diagnostics.window_scope.as_str() {
+                "visible-workspaces" => WindowScope::VisibleWorkspaces,
+                _ => WindowScope::AllWorkspaces,
+            },
             workspace_eligibility: match diagnostics.workspace_eligibility.as_str() {
                 "ready" => WorkspaceEligibilityState::Ready,
                 "missing-toplevel-info" => WorkspaceEligibilityState::MissingToplevelInfo {
@@ -210,6 +220,7 @@ mod tests {
             let diagnostics = ServiceDiagnostics {
                 mru_history: MruHistoryAccuracy::WarmUp,
                 mru_order: vec![WindowId::from("opaque")],
+                window_scope: WindowScope::AllWorkspaces,
                 workspace_eligibility: state,
             };
 
@@ -218,5 +229,16 @@ mod tests {
                 diagnostics
             );
         }
+
+        let visible = ServiceDiagnostics {
+            mru_history: MruHistoryAccuracy::Accurate,
+            mru_order: Vec::new(),
+            window_scope: WindowScope::VisibleWorkspaces,
+            workspace_eligibility: WorkspaceEligibilityState::Ready,
+        };
+        assert_eq!(
+            ServiceDiagnostics::from(DbusDiagnostics::from(visible.clone())),
+            visible
+        );
     }
 }

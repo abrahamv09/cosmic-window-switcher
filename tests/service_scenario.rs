@@ -4,7 +4,7 @@ use cosmic_window_switcher::{
     CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, HoldModifiers,
     InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
     SessionDisplay, SwitcherGrid, SwitcherItem, SwitcherService, WindowEvent, WindowId,
-    WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
+    WindowScope, WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
     WorkspaceSnapshot,
 };
 
@@ -156,8 +156,22 @@ fn failed_session_readiness_falls_back_in_the_requested_direction() {
 }
 
 #[test]
-fn missing_workspace_membership_falls_back_in_each_requested_direction() {
+fn all_workspaces_does_not_fall_back_when_workspace_membership_is_missing() {
     let mut service = service_with_mru_order(&["focused", "previous"]);
+    service.set_workspace_eligibility_state(WorkspaceEligibilityState::MissingToplevelMembership {
+        advertised_version: 3,
+    });
+
+    assert_eq!(
+        service.workspace_invocation_fallback(InvocationDirection::Next),
+        None
+    );
+}
+
+#[test]
+fn visible_workspaces_falls_back_in_each_direction_when_membership_is_missing() {
+    let mut service = service_with_mru_order(&["focused", "previous"]);
+    service.set_window_scope(WindowScope::VisibleWorkspaces);
     service.set_workspace_eligibility_state(WorkspaceEligibilityState::MissingToplevelMembership {
         advertised_version: 3,
     });
@@ -459,7 +473,10 @@ fn minimized_and_fullscreen_mixed_windows_use_one_activation_behavior() {
         ],
     };
     let context = desktop
-        .switching_context([window("fullscreen-native"), window("minimized-xwayland")])
+        .switching_context(
+            WindowScope::VisibleWorkspaces,
+            [window("fullscreen-native"), window("minimized-xwayland")],
+        )
         .expect("the focused Window identifies the Session Display");
     let mut service = service_with_mru_order(&["fullscreen-native", "minimized-xwayland"]);
 
