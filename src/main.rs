@@ -60,7 +60,22 @@ impl From<InvokeDirection> for InvocationDirection {
 
 fn main() -> Result<()> {
     let locale = Locale::detect();
-    let matches = localized_command(locale).get_matches();
+    let matches = match localized_command(locale).try_get_matches() {
+        Ok(matches) => matches,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            error.exit()
+        }
+        Err(_) => {
+            let mut command = localized_command(locale);
+            eprintln!("{}", localized_cli_error(locale, &mut command));
+            std::process::exit(2);
+        }
+    };
     let cli = Cli::from_arg_matches(&matches).expect("Clap generated and parsed the same command");
     match cli.command {
         Command::Service => service::run(),
@@ -84,6 +99,14 @@ fn main() -> Result<()> {
             output.as_deref(),
         )?),
     }
+}
+
+fn localized_cli_error(locale: Locale, command: &mut clap::Command) -> String {
+    format!(
+        "{}\n\n{}",
+        locale.text(StringKey::CliInvalidArguments),
+        command.render_long_help()
+    )
 }
 
 fn localized_command(locale: Locale) -> clap::Command {
@@ -175,5 +198,16 @@ mod cli_tests {
         assert!(help.contains("Un selector de ventanas nativo"));
         assert!(help.contains("Configurar las preferencias visuales"));
         assert!(!help.contains("Configure visual and performance preferences"));
+    }
+
+    #[test]
+    fn spanish_parse_errors_do_not_fall_back_to_clap_english() {
+        let mut command = localized_command(Locale::Spanish);
+        let rendered = localized_cli_error(Locale::Spanish, &mut command);
+
+        assert!(rendered.starts_with("Los argumentos de la línea de comandos"));
+        assert!(rendered.contains("Uso:"));
+        assert!(!rendered.contains("unexpected argument"));
+        assert!(!rendered.contains("For more information"));
     }
 }

@@ -49,6 +49,7 @@ cli-commands-heading = Commands:
 cli-options-heading = Options:
 cli-help-option = Print help
 cli-version-option = Print version
+cli-invalid-arguments = Invalid command-line arguments.
 service = service
 running = running
 mru-history = mru_history

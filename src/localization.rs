@@ -42,23 +42,36 @@ impl Locale {
     pub fn detect() -> Self {
         ["LANGUAGE", "LC_ALL", "LC_MESSAGES", "LANG"]
             .into_iter()
-            .find_map(|name| std::env::var(name).ok())
-            .map_or(Self::English, |language| Self::from_language_tag(&language))
+            .filter_map(|name| std::env::var(name).ok())
+            .find_map(|language| Self::supported_from_language_list(&language))
+            .unwrap_or(Self::English)
     }
 
     #[must_use]
     pub fn from_language_tag(language: &str) -> Self {
-        let language = language
-            .split([':', '.', '@'])
-            .next()
-            .unwrap_or(language)
-            .replace('_', "-")
-            .to_ascii_lowercase();
-        if language == "es" || language.starts_with("es-") {
-            Self::Spanish
-        } else {
-            Self::English
-        }
+        Self::supported_from_language_list(language).unwrap_or(Self::English)
+    }
+
+    fn supported_from_language_list(language: &str) -> Option<Self> {
+        language.split(':').find_map(|language| {
+            let language = language
+                .split(['.', '@'])
+                .next()
+                .unwrap_or(language)
+                .replace('_', "-")
+                .to_ascii_lowercase();
+            if language == "es" || language.starts_with("es-") {
+                Some(Self::Spanish)
+            } else if language == "en"
+                || language.starts_with("en-")
+                || language == "c"
+                || language == "posix"
+            {
+                Some(Self::English)
+            } else {
+                None
+            }
+        })
     }
 
     #[must_use]
@@ -174,6 +187,7 @@ string_keys!(
     CliOptionsHeading => "cli-options-heading",
     CliHelpOption => "cli-help-option",
     CliVersionOption => "cli-version-option",
+    CliInvalidArguments => "cli-invalid-arguments",
     Service => "service",
     Running => "running",
     MruHistory => "mru-history",

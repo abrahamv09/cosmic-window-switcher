@@ -21,6 +21,8 @@ fn locale_follows_english_and_spanish_desktop_language_tags() {
     assert_eq!(Locale::from_language_tag("C"), Locale::English);
     assert_eq!(Locale::from_language_tag("es_ES.UTF-8"), Locale::Spanish);
     assert_eq!(Locale::from_language_tag("es-419"), Locale::Spanish);
+    assert_eq!(Locale::from_language_tag("fr:es"), Locale::Spanish);
+    assert_eq!(Locale::from_language_tag(":es"), Locale::Spanish);
 }
 
 #[test]

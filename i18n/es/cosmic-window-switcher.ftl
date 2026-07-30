@@ -49,6 +49,7 @@ cli-commands-heading = Comandos:
 cli-options-heading = Opciones:
 cli-help-option = Mostrar la ayuda
 cli-version-option = Mostrar la versión
+cli-invalid-arguments = Los argumentos de la línea de comandos no son válidos.
 service = servicio
 running = activo
 mru-history = historial_mru
