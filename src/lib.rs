@@ -391,15 +391,36 @@ impl WorkspaceMoveVerification {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HistoryAccuracy {
+pub enum MruHistoryAccuracy {
     WarmUp,
     Accurate,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceDiagnostics {
-    pub history: HistoryAccuracy,
+    pub mru_history: MruHistoryAccuracy,
     pub mru_order: Vec<WindowId>,
+}
+
+impl fmt::Display for ServiceDiagnostics {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mru_history = match self.mru_history {
+            MruHistoryAccuracy::WarmUp => "warm-up",
+            MruHistoryAccuracy::Accurate => "accurate",
+        };
+        write!(
+            formatter,
+            "service: running\nmru_history: {mru_history}\nwindow_count: {}",
+            self.mru_order.len()
+        )?;
+        if !self.mru_order.is_empty() {
+            formatter.write_str("\nmru_order:")?;
+            for (position, id) in self.mru_order.iter().enumerate() {
+                write!(formatter, "\n  {}. {id}", position + 1)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -412,7 +433,7 @@ pub enum WindowEvent {
 #[derive(Clone, Debug)]
 struct TrackedWindow {
     id: WindowId,
-    activation_observed: bool,
+    recency_known: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -440,14 +461,14 @@ impl SwitcherService {
                 if !self.windows.iter().any(|window| window.id == id) {
                     self.windows.push(TrackedWindow {
                         id,
-                        activation_observed: self.initial_discovery_complete,
+                        recency_known: self.initial_discovery_complete,
                     });
                 }
             }
             WindowEvent::Activated(id) => {
                 if let Some(position) = self.windows.iter().position(|window| window.id == id) {
                     let mut window = self.windows.remove(position);
-                    window.activation_observed = true;
+                    window.recency_known = true;
                     self.windows.insert(0, window);
                 }
             }
@@ -460,10 +481,10 @@ impl SwitcherService {
     #[must_use]
     pub fn diagnostics(&self) -> ServiceDiagnostics {
         ServiceDiagnostics {
-            history: if self.windows.iter().all(|window| window.activation_observed) {
-                HistoryAccuracy::Accurate
+            mru_history: if self.windows.iter().all(|window| window.recency_known) {
+                MruHistoryAccuracy::Accurate
             } else {
-                HistoryAccuracy::WarmUp
+                MruHistoryAccuracy::WarmUp
             },
             mru_order: self
                 .windows

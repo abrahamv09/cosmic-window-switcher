@@ -380,6 +380,7 @@ dependencies = [
  "cosmic-client-toolkit",
  "cosmic-protocols",
  "rustix",
+ "serde",
  "smithay-client-toolkit",
  "wayland-client",
  "wayland-protocols",

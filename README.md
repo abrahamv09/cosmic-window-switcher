@@ -71,10 +71,10 @@ terminal, inspect the current MRU Order:
 cargo run --release -- status
 ```
 
-`status` reports either `mru_history: accurate` or `mru_history: warm-up`.
+`status` reports either `mru_history: accurate` or `mru_history: warm-up`. MRU
 Warm-up means the service restarted with pre-existing Windows whose relative
 focus history cannot be reconstructed. Opaque Window identities are shown so
-the order can be verified; Window titles and pixels are never included.
+the MRU Order can be verified; Window titles and pixels are never included.
 
 ## Verify workspace-move capability
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    HistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId,
+    MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId,
 };
 
 fn window(id: &str) -> WindowId {
@@ -22,7 +22,7 @@ fn observed_focus_sequence_produces_current_first_mru_order() {
     assert_eq!(
         service.diagnostics(),
         ServiceDiagnostics {
-            history: HistoryAccuracy::Accurate,
+            mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("gamma"), window("beta"), window("alpha")],
         }
     );
@@ -57,7 +57,7 @@ fn closed_windows_disappear_without_reordering_survivors() {
     assert_eq!(
         service.diagnostics(),
         ServiceDiagnostics {
-            history: HistoryAccuracy::Accurate,
+            mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("gamma"), window("alpha")],
         }
     );
@@ -76,7 +76,7 @@ fn restart_reports_warm_up_with_current_first_and_stable_discovery_order() {
     assert_eq!(
         restarted_service.diagnostics(),
         ServiceDiagnostics {
-            history: HistoryAccuracy::WarmUp,
+            mru_history: MruHistoryAccuracy::WarmUp,
             mru_order: vec![
                 window("current"),
                 window("unknown-first"),
@@ -101,7 +101,7 @@ fn reused_identity_does_not_inherit_the_closed_windows_recency() {
     assert_eq!(
         service.diagnostics(),
         ServiceDiagnostics {
-            history: HistoryAccuracy::Accurate,
+            mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("survivor"), window("reused")],
         }
     );
@@ -119,8 +119,21 @@ fn newly_discovered_window_gets_deterministic_placement_without_losing_accuracy(
     assert_eq!(
         service.diagnostics(),
         ServiceDiagnostics {
-            history: HistoryAccuracy::Accurate,
+            mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("current"), window("new-background-window")],
         }
+    );
+}
+
+#[test]
+fn status_diagnostics_report_mru_warm_up_without_window_titles() {
+    let diagnostics = ServiceDiagnostics {
+        mru_history: MruHistoryAccuracy::WarmUp,
+        mru_order: vec![window("opaque-a"), window("opaque-b")],
+    };
+
+    assert_eq!(
+        diagnostics.to_string(),
+        "service: running\nmru_history: warm-up\nwindow_count: 2\nmru_order:\n  1. opaque-a\n  2. opaque-b"
     );
 }
