@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    HoldModifiers, SessionEffect, SwitchingEvent, SwitchingSession, WindowId,
+    HoldModifiers, InvocationDirection, SessionEffect, SwitchingEvent, SwitchingSession, WindowId,
 };
 
 fn two_window_session() -> SwitchingSession {
     SwitchingSession::new(
         [WindowId::from("focused"), WindowId::from("previous")],
+        InvocationDirection::Next,
         HoldModifiers::ALT,
     )
     .expect("two Windows can start a Switching Session")
@@ -17,6 +18,22 @@ fn two_window_session_initially_selects_previous_window() {
     let session = two_window_session();
 
     assert_eq!(session.selected(), &WindowId::from("previous"));
+}
+
+#[test]
+fn reverse_session_initially_selects_final_mru_window() {
+    let session = SwitchingSession::new(
+        [
+            WindowId::from("focused"),
+            WindowId::from("previous"),
+            WindowId::from("least-recent"),
+        ],
+        InvocationDirection::Previous,
+        HoldModifiers::ALT,
+    )
+    .expect("three Windows can start a Switching Session");
+
+    assert_eq!(session.selected(), &WindowId::from("least-recent"));
 }
 
 #[test]
@@ -58,5 +75,20 @@ fn releasing_initial_hold_modifier_activates_selection_exactly_once() {
     assert_eq!(
         session.handle(SwitchingEvent::HoldModifiersChanged(HoldModifiers::empty())),
         SessionEffect::None
+    );
+}
+
+#[test]
+fn enter_activates_the_selected_window_in_latch_mode() {
+    let mut session = SwitchingSession::new(
+        [WindowId::from("focused"), WindowId::from("previous")],
+        InvocationDirection::Next,
+        HoldModifiers::empty(),
+    )
+    .expect("two Windows can start a Switching Session");
+
+    assert_eq!(
+        session.handle(SwitchingEvent::Enter),
+        SessionEffect::Activate(WindowId::from("previous"))
     );
 }

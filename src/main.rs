@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use cosmic_window_switcher::InvocationDirection;
 
 mod cosmic_session;
 mod probe;
@@ -25,6 +26,11 @@ enum Command {
     Service,
     /// Report the resident service's current MRU Order.
     Status,
+    /// Request a forward or reverse Window switch from the resident service.
+    Invoke {
+        #[command(subcommand)]
+        direction: InvokeDirection,
+    },
     /// Run the interactive two-Window COSMIC integration probe.
     Probe {
         /// Include Window titles in temporary probe output.
@@ -45,6 +51,23 @@ enum Command {
     },
 }
 
+#[derive(Clone, Copy, Debug, Subcommand)]
+enum InvokeDirection {
+    /// Select the next Window in MRU Order.
+    Next,
+    /// Select the previous Window in reverse MRU Order.
+    Previous,
+}
+
+impl From<InvokeDirection> for InvocationDirection {
+    fn from(direction: InvokeDirection) -> Self {
+        match direction {
+            InvokeDirection::Next => Self::Next,
+            InvokeDirection::Previous => Self::Previous,
+        }
+    }
+}
+
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Service => service::run(),
@@ -52,6 +75,7 @@ fn main() -> Result<()> {
             println!("{}", service::status()?);
             Ok(())
         }
+        Command::Invoke { direction } => service::invoke(direction.into()),
         Command::Probe { include_titles } => probe::run(include_titles),
         Command::ProbeWorkspaceMove {
             window,

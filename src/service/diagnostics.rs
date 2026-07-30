@@ -8,18 +8,25 @@ use zbus::{
     zvariant::Type,
 };
 
-use cosmic_window_switcher::{MruHistoryAccuracy, ServiceDiagnostics, WindowId};
+use cosmic_window_switcher::{
+    InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics, WindowId,
+};
 
-use super::SharedService;
+use super::{BUS_NAME, INTERFACE_NAME, OBJECT_PATH, PendingInvocations, SharedService};
 
-const BUS_NAME: &str = "io.github.abrahamv09.CosmicWindowSwitcher";
-const OBJECT_PATH: &str = "/io/github/abrahamv09/CosmicWindowSwitcher";
-const INTERFACE_NAME: &str = "io.github.abrahamv09.CosmicWindowSwitcher1";
-
-pub(super) fn serve(service: SharedService) -> Result<Connection> {
+pub(super) fn serve(
+    service: SharedService,
+    pending_invocations: PendingInvocations,
+) -> Result<Connection> {
     let connection = connection::Builder::session()
         .context("connect to the user-session D-Bus")?
-        .serve_at(OBJECT_PATH, DiagnosticsInterface { service })
+        .serve_at(
+            OBJECT_PATH,
+            ServiceInterface {
+                service,
+                pending_invocations,
+            },
+        )
         .context("register the Switcher Service D-Bus interface")?
         .build()
         .context("start the Switcher Service D-Bus connection")?;
@@ -80,17 +87,32 @@ impl From<DbusDiagnostics> for ServiceDiagnostics {
     }
 }
 
-struct DiagnosticsInterface {
+struct ServiceInterface {
     service: SharedService,
+    pending_invocations: PendingInvocations,
 }
 
 #[zbus::interface(name = "io.github.abrahamv09.CosmicWindowSwitcher1")]
-impl DiagnosticsInterface {
+impl ServiceInterface {
     fn status(&self) -> DbusDiagnostics {
         self.service
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .diagnostics()
             .into()
+    }
+
+    fn invoke(&self, direction: &str) -> zbus::fdo::Result<()> {
+        let direction = match direction {
+            "next" => InvocationDirection::Next,
+            "previous" => InvocationDirection::Previous,
+            _ => {
+                return Err(zbus::fdo::Error::InvalidArgs(
+                    "direction must be next or previous".to_owned(),
+                ));
+            }
+        };
+        self.pending_invocations.push(direction);
+        Ok(())
     }
 }

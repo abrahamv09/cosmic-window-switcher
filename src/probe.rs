@@ -46,7 +46,8 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, HoldModifiers, SessionEffect, SwitchingEvent, SwitchingSession, WindowId,
+    APPLICATION_ID, HoldModifiers, InvocationDirection, SessionEffect, SwitchingEvent,
+    SwitchingSession, WindowId,
 };
 
 pub fn run(include_titles: bool) -> Result<()> {
@@ -278,7 +279,7 @@ impl Probe {
         }
 
         self.session = Some(
-            SwitchingSession::new(windows, initial_hold_modifiers)
+            SwitchingSession::new(windows, InvocationDirection::Next, initial_hold_modifiers)
                 .context("start two-Window Switching Session")?,
         );
 
@@ -659,6 +660,9 @@ impl KeyboardHandler for Probe {
     ) {
         match event.keysym {
             Keysym::Tab => self.handle_switching_event(SwitchingEvent::Tab),
+            Keysym::Return | Keysym::KP_Enter => {
+                self.handle_switching_event(SwitchingEvent::Enter);
+            }
             Keysym::Escape => self.handle_switching_event(SwitchingEvent::Escape),
             _ => {}
         }

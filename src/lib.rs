@@ -65,8 +65,41 @@ impl BitOr for HoldModifiers {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InvocationDirection {
+    Next,
+    Previous,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InvocationRequest {
+    pub direction: InvocationDirection,
+    pub initial_hold_modifiers: HoldModifiers,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServiceEvent {
+    SessionReady,
+    SessionReadinessFailed,
+    RevealDelayElapsed,
+    HoldModifiersChanged(HoldModifiers),
+    Switching(SwitchingEvent),
+    Invocation(InvocationDirection),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ServiceEffect {
+    PrepareInvisibleOverlay { selected: WindowId },
+    RevealOverlay { selected: WindowId },
+    SelectionChanged(WindowId),
+    Activate(WindowId),
+    Cancel,
+    FallbackToStockSwitcher(InvocationDirection),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwitchingEvent {
     Tab,
+    Enter,
     Escape,
     HoldModifiersChanged(HoldModifiers),
 }
@@ -112,16 +145,21 @@ impl SwitchingSession {
     /// Returns [`NotEnoughWindows`] when fewer than two Windows are supplied.
     pub fn new(
         windows: impl IntoIterator<Item = WindowId>,
+        direction: InvocationDirection,
         initial_hold_modifiers: HoldModifiers,
     ) -> Result<Self, NotEnoughWindows> {
         let windows = windows.into_iter().collect::<Vec<_>>();
         if windows.len() < 2 {
             return Err(NotEnoughWindows);
         }
+        let selected = match direction {
+            InvocationDirection::Next => 1,
+            InvocationDirection::Previous => windows.len() - 1,
+        };
 
         Ok(Self {
             windows,
-            selected: 1,
+            selected,
             initial_hold_modifiers,
             state: SessionState::Open,
         })
@@ -138,9 +176,10 @@ impl SwitchingSession {
         }
 
         match event {
-            SwitchingEvent::Tab => {
-                self.selected = (self.selected + 1) % self.windows.len();
-                SessionEffect::SelectionChanged(self.selected().clone())
+            SwitchingEvent::Tab => self.move_selection(InvocationDirection::Next),
+            SwitchingEvent::Enter => {
+                self.state = SessionState::Finished;
+                SessionEffect::Activate(self.selected().clone())
             }
             SwitchingEvent::Escape => {
                 self.state = SessionState::Finished;
@@ -155,6 +194,47 @@ impl SwitchingSession {
             }
             SwitchingEvent::HoldModifiersChanged(_) => SessionEffect::None,
         }
+    }
+
+    fn move_selection(&mut self, direction: InvocationDirection) -> SessionEffect {
+        if self.state == SessionState::Finished {
+            return SessionEffect::None;
+        }
+        self.selected = match direction {
+            InvocationDirection::Next => (self.selected + 1) % self.windows.len(),
+            InvocationDirection::Previous if self.selected == 0 => self.windows.len() - 1,
+            InvocationDirection::Previous => self.selected - 1,
+        };
+        SessionEffect::SelectionChanged(self.selected().clone())
+    }
+
+    fn window_closed(&mut self, window: &WindowId) -> SessionEffect {
+        if self.state == SessionState::Finished {
+            return SessionEffect::None;
+        }
+        let Some(position) = self
+            .windows
+            .iter()
+            .position(|candidate| candidate == window)
+        else {
+            return SessionEffect::None;
+        };
+        self.windows.remove(position);
+        if self.windows.is_empty() {
+            self.state = SessionState::Finished;
+            return SessionEffect::Cancelled;
+        }
+        if position < self.selected {
+            self.selected -= 1;
+            return SessionEffect::None;
+        }
+        if position == self.selected {
+            if self.selected == self.windows.len() {
+                self.selected = 0;
+            }
+            return SessionEffect::SelectionChanged(self.selected().clone());
+        }
+        SessionEffect::None
     }
 }
 
@@ -436,10 +516,40 @@ struct TrackedWindow {
     recency_known: bool,
 }
 
+#[derive(Clone, Debug)]
+struct ActiveSession {
+    session: SwitchingSession,
+    direction: InvocationDirection,
+    ready: bool,
+    reveal_due: bool,
+    revealed: bool,
+    activation_after_readiness: Option<WindowId>,
+}
+
+impl ActiveSession {
+    fn translate_session_effect(&mut self, effect: SessionEffect) -> (Vec<ServiceEffect>, bool) {
+        match effect {
+            SessionEffect::SelectionChanged(window) => {
+                (vec![ServiceEffect::SelectionChanged(window)], false)
+            }
+            SessionEffect::Activate(window) if self.ready => {
+                (vec![ServiceEffect::Activate(window)], true)
+            }
+            SessionEffect::Activate(window) => {
+                self.activation_after_readiness = Some(window);
+                (Vec::new(), false)
+            }
+            SessionEffect::Cancelled => (vec![ServiceEffect::Cancel], true),
+            SessionEffect::None => (Vec::new(), false),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct SwitcherService {
     windows: Vec<TrackedWindow>,
     initial_discovery_complete: bool,
+    active_session: Option<ActiveSession>,
 }
 
 impl SwitcherService {
@@ -448,6 +558,7 @@ impl SwitcherService {
         Self {
             windows: Vec::new(),
             initial_discovery_complete: false,
+            active_session: None,
         }
     }
 
@@ -455,7 +566,11 @@ impl SwitcherService {
         self.initial_discovery_complete = true;
     }
 
-    pub fn observe(&mut self, event: WindowEvent) {
+    pub fn observe(&mut self, event: WindowEvent) -> Vec<ServiceEffect> {
+        let closed = match &event {
+            WindowEvent::Closed(id) => Some(id.clone()),
+            _ => None,
+        };
         match event {
             WindowEvent::Discovered(id) => {
                 if !self.windows.iter().any(|window| window.id == id) {
@@ -474,6 +589,107 @@ impl SwitcherService {
             }
             WindowEvent::Closed(id) => {
                 self.windows.retain(|window| window.id != id);
+            }
+        }
+
+        if let (Some(closed), Some(active_session)) = (closed, self.active_session.as_mut()) {
+            let effect = active_session.session.window_closed(&closed);
+            let (effects, finished) = active_session.translate_session_effect(effect);
+            if finished {
+                self.active_session = None;
+            }
+            return effects;
+        }
+
+        Vec::new()
+    }
+
+    pub fn invoke(&mut self, request: InvocationRequest) -> Vec<ServiceEffect> {
+        let windows = self
+            .windows
+            .iter()
+            .map(|window| window.id.clone())
+            .collect::<Vec<_>>();
+        let Ok(session) = SwitchingSession::new(
+            windows.clone(),
+            request.direction,
+            request.initial_hold_modifiers,
+        ) else {
+            return Vec::new();
+        };
+        let selected = session.selected().clone();
+        self.active_session = Some(ActiveSession {
+            session,
+            direction: request.direction,
+            ready: false,
+            reveal_due: false,
+            revealed: false,
+            activation_after_readiness: None,
+        });
+        vec![ServiceEffect::PrepareInvisibleOverlay { selected }]
+    }
+
+    pub fn handle(&mut self, event: ServiceEvent) -> Vec<ServiceEffect> {
+        let Some(active_session) = self.active_session.as_mut() else {
+            return Vec::new();
+        };
+
+        match event {
+            ServiceEvent::SessionReadinessFailed => {
+                let direction = active_session.direction;
+                self.active_session = None;
+                vec![ServiceEffect::FallbackToStockSwitcher(direction)]
+            }
+            ServiceEvent::SessionReady => {
+                active_session.ready = true;
+                if let Some(window) = active_session.activation_after_readiness.take() {
+                    self.active_session = None;
+                    vec![ServiceEffect::Activate(window)]
+                } else if active_session.reveal_due && !active_session.revealed {
+                    active_session.revealed = true;
+                    vec![ServiceEffect::RevealOverlay {
+                        selected: active_session.session.selected().clone(),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            ServiceEvent::RevealDelayElapsed => {
+                active_session.reveal_due = true;
+                if active_session.ready && !active_session.revealed {
+                    active_session.revealed = true;
+                    vec![ServiceEffect::RevealOverlay {
+                        selected: active_session.session.selected().clone(),
+                    }]
+                } else {
+                    Vec::new()
+                }
+            }
+            ServiceEvent::HoldModifiersChanged(modifiers) => {
+                let effect = active_session
+                    .session
+                    .handle(SwitchingEvent::HoldModifiersChanged(modifiers));
+                let (effects, finished) = active_session.translate_session_effect(effect);
+                if finished {
+                    self.active_session = None;
+                }
+                effects
+            }
+            ServiceEvent::Switching(event) => {
+                let effect = active_session.session.handle(event);
+                let (effects, finished) = active_session.translate_session_effect(effect);
+                if finished {
+                    self.active_session = None;
+                }
+                effects
+            }
+            ServiceEvent::Invocation(direction) => {
+                let effect = active_session.session.move_selection(direction);
+                let (effects, finished) = active_session.translate_session_effect(effect);
+                if finished {
+                    self.active_session = None;
+                }
+                effects
             }
         }
     }

@@ -4,7 +4,9 @@ COSMIC Window Switcher is a native Rust Window switcher for the COSMIC desktop.
 The executable includes a resident Switcher Service plus integration probes for
 Window switching and workspace-move capability verification. The service
 observes Window focus metadata throughout a COSMIC Session and keeps the current
-MRU Order without opening a visible Window or starting thumbnail capture.
+MRU Order without opening a visible Window or starting thumbnail capture. Its
+invisible quick-switch path captures the initial hold modifiers, selects in the
+requested MRU direction, and activates on release without flashing an overlay.
 
 The stable application identity is
 `io.github.abrahamv09.CosmicWindowSwitcher`. The project is licensed under
@@ -75,6 +77,33 @@ cargo run --release -- status
 Warm-up means the service restarted with pre-existing Windows whose relative
 focus history cannot be reconstructed. Opaque Window identities are shown so
 the MRU Order can be verified; Window titles and pixels are never included.
+
+## Invoke quick switching
+
+With the resident service running, request forward or reverse switching through
+the versioned user-session D-Bus interface:
+
+```sh
+cargo run --release -- invoke next
+cargo run --release -- invoke previous
+```
+
+Forward initially selects the second Window in MRU Order; reverse initially
+selects the final Window. Releasing the last initially held Alt, Ctrl, or Super
+modifier activates the selection. An invocation without a hold modifier uses
+Latch Mode, where Enter activates and Escape cancels. A single Eligible Window
+is a no-op.
+
+This ticket implements the invisible quick-switch slice. If the reveal delay
+expires before a visible Switcher Grid is ready, the resident service delegates
+that invocation to the stock switcher instead of leaving an invisible session
+open.
+
+Each command uses a bounded D-Bus call and makes one bounded activation/recovery
+attempt. If the service remains unavailable or Session Readiness fails, it
+executes `/usr/bin/cosmic-launcher alt-tab` or
+`/usr/bin/cosmic-launcher shift-alt-tab` directly. It never redispatches the
+overridden semantic shortcut action.
 
 ## Verify workspace-move capability
 
