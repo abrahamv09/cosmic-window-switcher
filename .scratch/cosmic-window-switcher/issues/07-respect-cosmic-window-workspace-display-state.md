@@ -43,10 +43,14 @@
   `.scratch/cosmic-window-switcher/upstream/cosmic-comp-workspace-move-capability-mismatch.md`.
 - Product decision on 2026-07-30: All Workspaces is now the default Window
   Scope so the custom switcher can run without per-Window workspace membership.
+  Continuing to delegate would have made the product unusable on the target
+  compositor, guessing membership would have been incorrect, and carrying a
+  local compositor fork would have delayed use and added system maintenance.
   Every foreign application toplevel participates in one global MRU Order.
   Visible-workspace derivation remains implemented as a stricter future scope,
   and the missing compositor snapshot remains diagnostic rather than an
-  invocation blocker. Implemented in commit `f489938`.
+  invocation blocker. Implemented in commit `f489938` and recorded in
+  `docs/adr/0012-default-to-all-workspaces.md`.
 - Live human validation on 2026-07-30 confirmed that the custom grid appears
   and selecting a Window on another workspace activates that workspace and
   focuses the selected Window.

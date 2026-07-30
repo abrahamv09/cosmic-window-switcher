@@ -145,6 +145,14 @@ compositor-managed XWayland Windows remain eligible. Layer-shell panels, docks,
 menus, notifications, and overlays never enter the foreign-toplevel Window
 registry.
 
+This scope is deliberate, not a guess from incomplete state. The target
+`cosmic-comp` advertises per-Window workspace membership but does not emit its
+initial membership snapshot, so Visible Workspaces cannot be derived
+authoritatively. Delegating every invocation would make the custom switcher
+unavailable, while patching the compositor would delay use and create an
+external maintenance dependency. [ADR-0012](docs/adr/0012-default-to-all-workspaces.md)
+records the decision and alternatives.
+
 The visible-workspace derivation remains available in the domain model for a
 future stricter mode. It derives the Visible Workspace Set from live
 `ext-workspace` groups, their assigned outputs, active and hidden state, and

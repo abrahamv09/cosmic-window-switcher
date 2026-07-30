@@ -61,8 +61,8 @@ The previously focused Window, shown as the second Switcher Item when the COSMIC
 _Avoid_: Current window selection, first item selection
 
 **COSMIC Workspace Policy**:
-COSMIC's authoritative rules for whether workspaces span displays or belong to separate displays. The COSMIC Window Switcher respects this policy and does not define a competing workspace mode.
-_Avoid_: Switcher workspace mode, workspace override
+COSMIC's authoritative rules for whether workspaces span displays or belong to separate displays. Visible Workspaces consumes this live policy; All Workspaces does not copy or reinterpret it.
+_Avoid_: Copied workspace policy, workspace override
 
 **COSMIC Accessibility Policy**:
 COSMIC's authoritative screen-reader and high-contrast state. The COSMIC Window Switcher always provides accessibility semantics and does not define a competing accessibility mode.
@@ -84,9 +84,21 @@ _Avoid_: Live settings, delayed save
 The workspace spanning all displays, or the independently active workspace on each display, as determined by COSMIC Workspace Policy.
 _Avoid_: Current workspace
 
+**Window Scope**:
+The rule selecting which discovered Windows enter a Session Window Set. All Workspaces is the default; Visible Workspaces is the capability-gated stricter scope.
+_Avoid_: COSMIC Workspace Policy, guessed workspace membership
+
+**All Workspaces**:
+The Window Scope in which every independently exposed application Window participates in one global MRU Order, including Windows on inactive workspaces.
+_Avoid_: Unfiltered fallback, guessed visibility
+
+**Visible Workspaces**:
+The Window Scope in which only Windows belonging to the Visible Workspace Set participate. It requires an authoritative committed membership snapshot from COSMIC.
+_Avoid_: Current workspace only, inferred workspace
+
 **Eligible Window**:
-A Native Wayland Window or XWayland Window belonging to the Visible Workspace Set, including a minimized Window. Eligible Windows across every display participate in the COSMIC Window Switcher.
-_Avoid_: Focused-display window
+A Native Wayland Window or XWayland Window admitted by the active Window Scope, including a minimized Window. Shell surfaces remain excluded in every scope.
+_Avoid_: App, focused-display window
 
 **Minimized Window**:
 An Eligible Window hidden through minimization. Selecting it restores and focuses it; its Switcher Item uses the last available thumbnail or falls back to its application icon and title.
@@ -133,8 +145,8 @@ The stable snapshot of Eligible Windows in MRU Order captured when a Switching S
 _Avoid_: Live window list, dynamic order
 
 **Session Display**:
-The display containing the Window that was focused when a Switching Session began. It hosts the session's sole Switcher Grid even when Eligible Windows span multiple displays.
-_Avoid_: Primary display, duplicated overlay
+The display hosting the session's sole Switcher Grid. It is the initially focused Window's display when authoritative membership is available, otherwise a deterministic workspace-group output in All Workspaces.
+_Avoid_: Duplicated overlay, random display
 
 **Workspace Move**:
 The v1 direct-manipulation action that drags a Switcher Item onto a COSMIC workspace target. Moving a Window outside the Visible Workspace Set removes it from the current Session Window Set without ending the Switching Session.
