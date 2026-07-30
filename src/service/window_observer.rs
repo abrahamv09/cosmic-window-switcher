@@ -53,7 +53,7 @@ impl WindowObserver {
             cosmic_toplevel_info,
             windows: Vec::new(),
             observations: ObservationLedger::default(),
-            next_window_key: 0,
+            next_observation_key: 0,
             service,
         };
 
@@ -94,7 +94,7 @@ impl WindowObserver {
 
 #[derive(Clone)]
 struct ObservedWindow {
-    key: u64,
+    key: ObservationKey,
     foreign_toplevel: ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
     cosmic_toplevel: zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
 }
@@ -105,7 +105,7 @@ struct ProtocolObserver {
     cosmic_toplevel_info: zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
     windows: Vec<ObservedWindow>,
     observations: ObservationLedger,
-    next_window_key: u64,
+    next_observation_key: u64,
     service: SharedService,
 }
 
@@ -124,15 +124,24 @@ impl ProtocolObserver {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Observation {
-    Discovered(u64),
-    Identified { key: u64, id: WindowId },
-    ActivationChanged { key: u64, activated: bool },
-    Closed(u64),
+    Discovered(ObservationKey),
+    Identified {
+        key: ObservationKey,
+        id: WindowId,
+    },
+    ActivationChanged {
+        key: ObservationKey,
+        activated: bool,
+    },
+    Closed(ObservationKey),
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ObservationKey(u64);
 
 #[derive(Clone, Debug)]
 struct ObservationWindow {
-    key: u64,
+    key: ObservationKey,
     id: Option<WindowId>,
     activated: bool,
     registered: bool,
@@ -141,7 +150,7 @@ struct ObservationWindow {
 #[derive(Clone, Debug, Default)]
 struct ObservationLedger {
     windows: Vec<ObservationWindow>,
-    pending_activations: Vec<u64>,
+    pending_activations: Vec<ObservationKey>,
 }
 
 impl ObservationLedger {
@@ -244,8 +253,8 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, GlobalData
                     queue_handle,
                     GlobalData,
                 );
-                let key = state.next_window_key;
-                state.next_window_key += 1;
+                let key = ObservationKey(state.next_observation_key);
+                state.next_observation_key += 1;
                 state.windows.push(ObservedWindow {
                     key,
                     foreign_toplevel: toplevel,
@@ -362,29 +371,29 @@ mod tests {
         MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId,
     };
 
-    use super::{Observation, ObservationLedger};
+    use super::{Observation, ObservationKey, ObservationLedger};
 
     #[test]
     fn activation_before_delayed_identity_preserves_observed_recency() {
         let service = Arc::new(RwLock::new(SwitcherService::new()));
         let mut observations = ObservationLedger::default();
         let scenario = [
-            Observation::Discovered(1),
-            Observation::Discovered(2),
+            Observation::Discovered(ObservationKey(1)),
+            Observation::Discovered(ObservationKey(2)),
             Observation::Identified {
-                key: 2,
+                key: ObservationKey(2),
                 id: WindowId::from("activated"),
             },
             Observation::ActivationChanged {
-                key: 2,
+                key: ObservationKey(2),
                 activated: true,
             },
             Observation::ActivationChanged {
-                key: 2,
+                key: ObservationKey(2),
                 activated: false,
             },
             Observation::Identified {
-                key: 1,
+                key: ObservationKey(1),
                 id: WindowId::from("delayed"),
             },
         ];
