@@ -10,6 +10,7 @@ use zbus::{
 
 use cosmic_window_switcher::{
     InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics, WindowId,
+    WorkspaceEligibilityDiagnostics,
 };
 
 use super::{BUS_NAME, INTERFACE_NAME, OBJECT_PATH, PendingInvocations, SharedService};
@@ -55,6 +56,8 @@ pub(super) fn status() -> Result<ServiceDiagnostics> {
 struct DbusDiagnostics {
     mru_warm_up: bool,
     mru_order: Vec<String>,
+    workspace_eligibility: String,
+    toplevel_info_version: u32,
 }
 
 impl From<ServiceDiagnostics> for DbusDiagnostics {
@@ -66,6 +69,21 @@ impl From<ServiceDiagnostics> for DbusDiagnostics {
                 .into_iter()
                 .map(|id| id.as_str().to_owned())
                 .collect(),
+            workspace_eligibility: match diagnostics.workspace_eligibility {
+                WorkspaceEligibilityDiagnostics::AwaitingSnapshot => "awaiting-snapshot",
+                WorkspaceEligibilityDiagnostics::Ready => "ready",
+                WorkspaceEligibilityDiagnostics::MissingToplevelMembership { .. } => {
+                    "missing-toplevel-membership"
+                }
+            }
+            .to_owned(),
+            toplevel_info_version: match diagnostics.workspace_eligibility {
+                WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
+                    advertised_version,
+                } => advertised_version,
+                WorkspaceEligibilityDiagnostics::AwaitingSnapshot
+                | WorkspaceEligibilityDiagnostics::Ready => 0,
+            },
         }
     }
 }
@@ -83,6 +101,15 @@ impl From<DbusDiagnostics> for ServiceDiagnostics {
                 .into_iter()
                 .map(WindowId::from)
                 .collect(),
+            workspace_eligibility: match diagnostics.workspace_eligibility.as_str() {
+                "ready" => WorkspaceEligibilityDiagnostics::Ready,
+                "missing-toplevel-membership" => {
+                    WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
+                        advertised_version: diagnostics.toplevel_info_version,
+                    }
+                }
+                _ => WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
+            },
         }
     }
 }

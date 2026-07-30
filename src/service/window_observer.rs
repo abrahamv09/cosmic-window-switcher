@@ -35,7 +35,7 @@ use smithay_client_toolkit::{
 };
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
-    globals::registry_queue_init,
+    globals::{GlobalList, registry_queue_init},
     protocol::{wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
 use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
@@ -57,8 +57,8 @@ use cosmic_window_switcher::{
     APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, DesktopSnapshot,
     FractionalScale, GridLayout, HoldModifiers, InvocationDirection, InvocationRequest,
     RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout,
-    SurfaceRole, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowSnapshot,
-    WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
+    SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowSnapshot,
+    WorkspaceEligibilityDiagnostics, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 use super::{
@@ -74,6 +74,30 @@ use crate::shm_capture::{
 
 const REVEAL_DELAY: Duration = Duration::from_millis(100);
 const SESSION_READINESS_TIMEOUT: Duration = Duration::from_millis(500);
+const TOPLEVEL_INFO_INTERFACE: &str = "zcosmic_toplevel_info_v1";
+
+fn advertised_global_version(globals: &GlobalList, interface: &str) -> Result<u32> {
+    globals
+        .contents()
+        .with_list(|list| {
+            list.iter()
+                .find(|global| global.interface == interface)
+                .map(|global| global.version)
+        })
+        .with_context(|| format!("the compositor does not advertise {interface}"))
+}
+
+fn bind_workspace_state(
+    registry_state: &RegistryState,
+    queue_handle: &QueueHandle<ProtocolObserver>,
+) -> Result<WorkspaceState> {
+    let workspace_state = WorkspaceState::new(registry_state, queue_handle);
+    workspace_state
+        .workspace_manager()
+        .get()
+        .context("the compositor does not expose live workspace state")?;
+    Ok(workspace_state)
+}
 
 pub(super) struct WindowObserver {
     connection: Connection,
@@ -92,6 +116,8 @@ impl WindowObserver {
         let (globals, event_queue) =
             registry_queue_init(&connection).context("read Wayland globals")?;
         let queue_handle = event_queue.handle();
+        let advertised_toplevel_info_version =
+            advertised_global_version(&globals, TOPLEVEL_INFO_INTERFACE)?;
         let compositor =
             CompositorState::bind(&globals, &queue_handle).context("bind wl_compositor")?;
         let layer_shell =
@@ -125,11 +151,7 @@ impl WindowObserver {
             .context("the compositor does not expose COSMIC Window workspace state")?;
         let toplevel_manager = ToplevelManagerState::try_new(&registry_state, &queue_handle)
             .context("the compositor does not expose COSMIC Window management")?;
-        let workspace_state = WorkspaceState::new(&registry_state, &queue_handle);
-        workspace_state
-            .workspace_manager()
-            .get()
-            .context("the compositor does not expose live workspace state")?;
+        let workspace_state = bind_workspace_state(&registry_state, &queue_handle)?;
         let state = ProtocolObserver {
             queue_handle: queue_handle.clone(),
             registry_state,
@@ -152,6 +174,7 @@ impl WindowObserver {
             next_observation_key: 0,
             service,
             management_can_activate: false,
+            advertised_toplevel_info_version,
             workspace_snapshot_received: false,
             toplevel_snapshot_received: false,
             accessibility: AccessibilityBridge::new(),
@@ -193,21 +216,26 @@ impl WindowObserver {
             self.event_queue
                 .roundtrip(&mut self.state)
                 .context("receive initial COSMIC Window and workspace state")?;
-            if round >= 2
-                && self.state.workspace_snapshot_received
-                && self.state.toplevel_snapshot_received
-            {
+            if round >= 2 && self.state.workspace_snapshot_received {
                 break;
             }
         }
-        if !self.state.workspace_snapshot_received || !self.state.toplevel_snapshot_received {
-            bail!("COSMIC did not provide a complete Window and workspace snapshot");
+        if !self.state.workspace_snapshot_received {
+            bail!("COSMIC did not provide a complete workspace snapshot");
         }
-        self.state
+        let mut service = self
+            .state
             .service
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .complete_initial_discovery();
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        service.set_workspace_eligibility_diagnostics(if self.state.toplevel_snapshot_received {
+            WorkspaceEligibilityDiagnostics::Ready
+        } else {
+            WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
+                advertised_version: self.state.advertised_toplevel_info_version,
+            }
+        });
+        service.complete_initial_discovery();
         Ok(())
     }
 
@@ -268,11 +296,20 @@ struct ObservedWindow {
     title: String,
     application_id: String,
     outputs: Vec<wl_output::WlOutput>,
+    geometries: std::collections::HashMap<wl_output::WlOutput, WindowGeometry>,
     workspaces: std::collections::HashSet<ext_workspace_handle_v1::ExtWorkspaceHandleV1>,
     committed_workspaces: std::collections::HashSet<ext_workspace_handle_v1::ExtWorkspaceHandleV1>,
     minimized: bool,
     fullscreen: bool,
     sticky: bool,
+}
+
+#[derive(Clone, Copy)]
+struct WindowGeometry {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
 }
 
 #[derive(Default)]
@@ -304,6 +341,7 @@ struct ProtocolObserver {
     next_observation_key: u64,
     service: SharedService,
     management_can_activate: bool,
+    advertised_toplevel_info_version: u32,
     workspace_snapshot_received: bool,
     toplevel_snapshot_received: bool,
     accessibility: AccessibilityBridge,
@@ -669,6 +707,27 @@ impl ProtocolObserver {
             .find(|window| self.observations.window_id(window.key) == Some(id))
     }
 
+    fn commit_toplevel_snapshot(&mut self) {
+        for window in &mut self.windows {
+            window.committed_workspaces.clone_from(&window.workspaces);
+        }
+        self.toplevel_snapshot_received = self
+            .windows
+            .iter()
+            .all(|window| window.sticky || !window.committed_workspaces.is_empty());
+        let diagnostics = if self.toplevel_snapshot_received {
+            WorkspaceEligibilityDiagnostics::Ready
+        } else {
+            WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
+                advertised_version: self.advertised_toplevel_info_version,
+            }
+        };
+        self.service
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .set_workspace_eligibility_diagnostics(diagnostics);
+    }
+
     fn desktop_snapshot(&self) -> DesktopSnapshot {
         let workspace_groups = self
             .workspace_state
@@ -705,11 +764,6 @@ impl ProtocolObserver {
             .filter_map(|window| {
                 Some(WindowSnapshot {
                     id: self.observations.window_id(window.key)?.clone(),
-                    // ext-foreign-toplevel exposes independently switchable
-                    // Native Wayland and compositor-managed XWayland Windows
-                    // through this one role. Layer-shell surfaces never enter
-                    // this registry.
-                    role: SurfaceRole::Window,
                     workspace_membership: window
                         .committed_workspaces
                         .iter()
@@ -720,6 +774,9 @@ impl ProtocolObserver {
                         .iter()
                         .filter_map(|output| self.output_display(output))
                         .collect(),
+                    session_display: self
+                        .session_output_for_window(window)
+                        .and_then(|output| self.output_display(output)),
                     minimized: window.minimized,
                     fullscreen: window.fullscreen,
                     sticky: window.sticky,
@@ -738,6 +795,58 @@ impl ProtocolObserver {
         self.output_state.info(output).map(|info| {
             SessionDisplay::from(info.name.unwrap_or_else(|| format!("output-{}", info.id)))
         })
+    }
+
+    fn session_output_for_window<'a>(
+        &self,
+        window: &'a ObservedWindow,
+    ) -> Option<&'a wl_output::WlOutput> {
+        if let [only] = window.outputs.as_slice() {
+            return Some(only);
+        }
+        window
+            .outputs
+            .iter()
+            .filter(|output| window.geometries.contains_key(*output))
+            .max_by(|left, right| {
+                let left_area = self.window_area_on_output(window, left);
+                let right_area = self.window_area_on_output(window, right);
+                left_area.cmp(&right_area).then_with(|| {
+                    let left_name = self.output_display(left).map(|display| display.to_string());
+                    let right_name = self
+                        .output_display(right)
+                        .map(|display| display.to_string());
+                    // Reverse the lexical tie-break so `max_by` chooses the
+                    // stable lowest output name when visible areas are equal.
+                    right_name.cmp(&left_name)
+                })
+            })
+    }
+
+    fn window_area_on_output(&self, window: &ObservedWindow, output: &wl_output::WlOutput) -> u64 {
+        let Some(geometry) = window.geometries.get(output) else {
+            return 0;
+        };
+        let Some((output_width, output_height)) = self
+            .output_state
+            .info(output)
+            .and_then(|info| info.logical_size)
+        else {
+            return 0;
+        };
+        let left = geometry.x.max(0);
+        let top = geometry.y.max(0);
+        let right = geometry
+            .x
+            .saturating_add(geometry.width.max(0))
+            .min(output_width);
+        let bottom = geometry
+            .y
+            .saturating_add(geometry.height.max(0))
+            .min(output_height);
+        let width = u64::try_from(right.saturating_sub(left)).unwrap_or(0);
+        let height = u64::try_from(bottom.saturating_sub(top)).unwrap_or(0);
+        width.saturating_mul(height)
     }
 
     fn workspace_id(&self, handle: &ext_workspace_handle_v1::ExtWorkspaceHandleV1) -> WorkspaceId {
@@ -1657,6 +1766,14 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, GlobalData
     ) {
         match event {
             ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } => {
+                state.toplevel_snapshot_received = false;
+                state
+                    .service
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .set_workspace_eligibility_diagnostics(
+                        WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
+                    );
                 let cosmic_toplevel = state.cosmic_toplevel_info.get_cosmic_toplevel(
                     &toplevel,
                     queue_handle,
@@ -1671,6 +1788,7 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, GlobalData
                     title: String::new(),
                     application_id: String::new(),
                     outputs: Vec::new(),
+                    geometries: std::collections::HashMap::new(),
                     workspaces: std::collections::HashSet::new(),
                     committed_workspaces: std::collections::HashSet::new(),
                     minimized: false,
@@ -1752,10 +1870,7 @@ impl Dispatch<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, GlobalData> for P
         _queue_handle: &QueueHandle<Self>,
     ) {
         if let zcosmic_toplevel_info_v1::Event::Done = event {
-            for window in &mut state.windows {
-                window.committed_workspaces.clone_from(&window.workspaces);
-            }
-            state.toplevel_snapshot_received = true;
+            state.commit_toplevel_snapshot();
         }
     }
 
@@ -1794,6 +1909,26 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, GlobalData>
             zcosmic_toplevel_handle_v1::Event::OutputLeave { output } => {
                 if let Some(window) = state.windows.iter_mut().find(|window| window.key == key) {
                     window.outputs.retain(|candidate| *candidate != output);
+                    window.geometries.remove(&output);
+                }
+            }
+            zcosmic_toplevel_handle_v1::Event::Geometry {
+                output,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                if let Some(window) = state.windows.iter_mut().find(|window| window.key == key) {
+                    window.geometries.insert(
+                        output,
+                        WindowGeometry {
+                            x,
+                            y,
+                            width,
+                            height,
+                        },
+                    );
                 }
             }
             zcosmic_toplevel_handle_v1::Event::State { state: states } => {
@@ -1899,6 +2034,7 @@ mod tests {
 
     use cosmic_window_switcher::{
         MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId,
+        WorkspaceEligibilityDiagnostics,
     };
 
     use super::{Observation, ObservationKey, ObservationLedger};
@@ -1944,6 +2080,7 @@ mod tests {
             ServiceDiagnostics {
                 mru_history: MruHistoryAccuracy::WarmUp,
                 mru_order: vec![WindowId::from("activated"), WindowId::from("delayed")],
+                workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
             }
         );
     }

@@ -2,6 +2,7 @@
 
 use cosmic_window_switcher::{
     MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowEvent, WindowId,
+    WorkspaceEligibilityDiagnostics,
 };
 
 fn window(id: &str) -> WindowId {
@@ -24,6 +25,7 @@ fn observed_focus_sequence_produces_current_first_mru_order() {
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("gamma"), window("beta"), window("alpha")],
+            workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
         }
     );
 }
@@ -59,6 +61,7 @@ fn closed_windows_disappear_without_reordering_survivors() {
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("gamma"), window("alpha")],
+            workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
         }
     );
 }
@@ -82,6 +85,7 @@ fn restart_reports_warm_up_with_current_first_and_stable_discovery_order() {
                 window("unknown-first"),
                 window("unknown-second"),
             ],
+            workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
         }
     );
 }
@@ -103,6 +107,7 @@ fn reused_identity_does_not_inherit_the_closed_windows_recency() {
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("survivor"), window("reused")],
+            workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
         }
     );
 }
@@ -121,6 +126,7 @@ fn newly_discovered_window_gets_deterministic_placement_without_losing_accuracy(
         ServiceDiagnostics {
             mru_history: MruHistoryAccuracy::Accurate,
             mru_order: vec![window("current"), window("new-background-window")],
+            workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
         }
     );
 }
@@ -130,10 +136,13 @@ fn status_diagnostics_report_mru_warm_up_without_window_titles() {
     let diagnostics = ServiceDiagnostics {
         mru_history: MruHistoryAccuracy::WarmUp,
         mru_order: vec![window("opaque-a"), window("opaque-b")],
+        workspace_eligibility: WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
+            advertised_version: 3,
+        },
     };
 
     assert_eq!(
         diagnostics.to_string(),
-        "service: running\nmru_history: warm-up\nwindow_count: 2\nmru_order:\n  1. opaque-a\n  2. opaque-b"
+        "service: running\nmru_history: warm-up\nwindow_count: 2\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot\nmru_order:\n  1. opaque-a\n  2. opaque-b"
     );
 }

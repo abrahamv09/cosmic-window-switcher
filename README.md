@@ -143,7 +143,7 @@ At each invocation, the service derives the Visible Workspace Set from live
 each Window's committed COSMIC workspace membership. A spanning group includes
 its active workspace across every display; separate-display groups contribute
 the active workspace from each display. This is not a Switcher Preference, so a
-COSMIC workspace-policy change affects the next Switching Session without a
+COSMIC Workspace Policy change affects the next Switching Session without a
 service restart. Minimized Windows, independently exposed dialogs and utility
 Windows, Native Wayland Windows, and compositor-managed XWayland Windows remain
 eligible. Layer-shell panels, docks, menus, notifications, and overlays never
@@ -153,6 +153,15 @@ The service creates exactly one overlay on the output containing the Window
 that was focused at invocation. Selecting a minimized Window uses COSMIC's
 normal activation request, which restores and focuses it. Activation does not
 issue any fullscreen-state request, so a fullscreen Window remains fullscreen.
+
+Workspace eligibility is capability-gated. If COSMIC advertises toplevel-info
+v3 but does not provide a committed ext-workspace membership snapshot, the
+Switcher Service remains resident for MRU tracking and `status` reports
+`workspace_eligibility: unavailable`. Each Invocation Request then delegates to
+the stock switcher rather than guessing from stale configuration or showing an
+incorrect Window set. The packaged compositor build recorded in
+`.scratch/cosmic-window-switcher/upstream/` currently has this upstream
+limitation.
 
 If the grid cannot be rendered or targeted to the Session Display before
 Session Readiness times out, the resident service delegates that invocation to

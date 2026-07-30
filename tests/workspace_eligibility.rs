@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    DesktopSnapshot, SessionDisplay, SurfaceRole, WindowId, WindowSnapshot, WorkspaceGroupSnapshot,
-    WorkspaceId, WorkspaceSnapshot,
+    DesktopSnapshot, SessionDisplay, WindowId, WindowSnapshot, WorkspaceGroupSnapshot, WorkspaceId,
+    WorkspaceSnapshot,
 };
 
 fn window(id: &str) -> WindowId {
@@ -20,9 +20,9 @@ fn display(id: &str) -> SessionDisplay {
 fn task_window(id: &str, workspaces: &[&str], outputs: &[&str]) -> WindowSnapshot {
     WindowSnapshot {
         id: window(id),
-        role: SurfaceRole::Window,
         workspace_membership: workspaces.iter().copied().map(workspace).collect(),
         output_membership: outputs.iter().copied().map(display).collect(),
+        session_display: outputs.first().copied().map(display),
         minimized: false,
         fullscreen: false,
         sticky: false,
@@ -68,6 +68,30 @@ fn spanning_workspace_includes_its_windows_across_all_displays_in_mru_order() {
         vec![window("focused"), window("other-display")]
     );
     assert_eq!(context.session_display, display("HDMI-A-1"));
+}
+
+#[test]
+fn compositor_selected_session_display_wins_over_output_event_order() {
+    let mut focused = task_window("focused", &["visible"], &["left", "right"]);
+    focused.session_display = Some(display("right"));
+    let snapshot = DesktopSnapshot {
+        workspace_groups: vec![WorkspaceGroupSnapshot {
+            outputs: vec![display("left"), display("right")],
+            workspaces: vec![workspace("visible")],
+        }],
+        workspaces: vec![WorkspaceSnapshot {
+            id: workspace("visible"),
+            active: true,
+            hidden: false,
+        }],
+        windows: vec![focused, task_window("previous", &["visible"], &["left"])],
+    };
+
+    let context = snapshot
+        .switching_context([window("focused"), window("previous")])
+        .expect("the compositor selected a Session Display");
+
+    assert_eq!(context.session_display, display("right"));
 }
 
 #[test]
@@ -134,22 +158,8 @@ fn minimized_dialog_utility_and_mixed_window_types_share_eligibility() {
     minimized.minimized = true;
     let mut fullscreen = task_window("fullscreen-xwayland", &["visible"], &["eDP-1"]);
     fullscreen.fullscreen = true;
-    let mut dialog = task_window("dialog", &["visible"], &["eDP-1"]);
-    dialog.role = SurfaceRole::Dialog;
-    let mut utility = task_window("utility", &["visible"], &["eDP-1"]);
-    utility.role = SurfaceRole::Utility;
-    let shell_surfaces = [
-        ("panel", SurfaceRole::Panel),
-        ("dock", SurfaceRole::Dock),
-        ("menu", SurfaceRole::Menu),
-        ("notification", SurfaceRole::Notification),
-        ("overlay", SurfaceRole::Overlay),
-    ]
-    .map(|(id, role)| {
-        let mut surface = task_window(id, &["visible"], &["eDP-1"]);
-        surface.role = role;
-        surface
-    });
+    let dialog = task_window("dialog", &["visible"], &["eDP-1"]);
+    let utility = task_window("utility", &["visible"], &["eDP-1"]);
     let snapshot = DesktopSnapshot {
         workspace_groups: vec![WorkspaceGroupSnapshot {
             outputs: vec![display("eDP-1")],
@@ -160,10 +170,10 @@ fn minimized_dialog_utility_and_mixed_window_types_share_eligibility() {
             active: true,
             hidden: false,
         }],
-        windows: [minimized, fullscreen, dialog, utility]
-            .into_iter()
-            .chain(shell_surfaces)
-            .collect(),
+        // Only independently exposed Windows enter this snapshot. COSMIC
+        // layer-shell panels, docks, menus, notifications, and overlays are
+        // excluded at the foreign-toplevel adapter boundary.
+        windows: vec![minimized, fullscreen, dialog, utility],
     };
 
     let context = snapshot
@@ -172,11 +182,6 @@ fn minimized_dialog_utility_and_mixed_window_types_share_eligibility() {
             window("fullscreen-xwayland"),
             window("dialog"),
             window("utility"),
-            window("panel"),
-            window("dock"),
-            window("menu"),
-            window("notification"),
-            window("overlay"),
         ])
         .expect("the focused Window identifies the Session Display");
 
@@ -192,7 +197,7 @@ fn minimized_dialog_utility_and_mixed_window_types_share_eligibility() {
 }
 
 #[test]
-fn a_live_workspace_policy_change_affects_the_next_context_only() {
+fn a_cosmic_workspace_policy_change_affects_the_next_context_only() {
     let mut snapshot = DesktopSnapshot {
         workspace_groups: vec![WorkspaceGroupSnapshot {
             outputs: vec![display("eDP-1")],

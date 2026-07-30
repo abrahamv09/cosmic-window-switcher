@@ -66,7 +66,7 @@ Run `cargo run --release -- probe-workspace-move` before each scenario to record
 the compositor's live workspace groups, output assignments, active workspace
 state, and Window membership. Run the resident service, invoke the Switcher
 Grid, and compare its Window set and display placement with that inventory.
-Change COSMIC's workspace policy while the service remains running and repeat
+Change COSMIC Workspace Policy while the service remains running and repeat
 the invocation; an already open Switching Session remains stable, while the
 next one uses the new state.
 
@@ -85,4 +85,25 @@ next one uses the new state.
 The deterministic `workspace_eligibility` and `service_scenario` tests exercise
 the same public snapshot and activation behavior with fake spanning and
 separate-display groups, active-state changes, minimized/fullscreen state,
-dialogs, utility Windows, shell surfaces, and mixed Window identities.
+dialogs, utility Windows, and mixed Window identities. Shell-surface exclusion
+is exercised at the live foreign-toplevel boundary because shell surfaces are
+not Windows and therefore never enter the domain snapshot.
+
+### Current live result
+
+On 2026-07-30, the reference Pop!_OS compositor
+`cosmic-comp 1.0.0` (`ffeda3375a7e60ace6ae64b19432f1f0c1fc1034`)
+advertised toplevel-info v3 and ext-workspace v1, but emitted neither initial
+Window output/workspace membership nor the atomic toplevel-info `done` event.
+The service stayed resident, retained both discovered Windows in MRU Warm-up,
+and reported:
+
+```text
+workspace_eligibility: unavailable
+workspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot
+```
+
+The live matrix above remains blocked on that compositor defect. Invocation
+must use the direction-preserving stock fallback until a compositor build
+provides the advertised snapshot; the client must not infer COSMIC Workspace
+Policy from a copied preference.

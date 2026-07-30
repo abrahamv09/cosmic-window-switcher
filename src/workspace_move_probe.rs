@@ -455,9 +455,15 @@ impl WorkspaceMoveProbe {
             .filter(|window| window.metadata_complete)
         {
             let memberships = self.membership_ids(&window.committed_workspaces);
+            let mut outputs = window
+                .outputs
+                .iter()
+                .map(|output| self.output_label(output))
+                .collect::<Vec<_>>();
+            outputs.sort();
             println!(
-                "Window id={} app_id={:?} workspace membership={memberships:?}.",
-                window.identifier, window.app_id
+                "Window id={} app_id={:?} outputs={outputs:?} workspace membership={memberships:?}.",
+                window.identifier, window.app_id,
             );
         }
         if self.toplevel_snapshot_generation == 0 {

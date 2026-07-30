@@ -929,25 +929,6 @@ impl fmt::Display for WorkspaceId {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SurfaceRole {
-    Window,
-    Dialog,
-    Utility,
-    Panel,
-    Dock,
-    Menu,
-    Notification,
-    Overlay,
-}
-
-impl SurfaceRole {
-    #[must_use]
-    pub const fn is_switchable(self) -> bool {
-        matches!(self, Self::Window | Self::Dialog | Self::Utility)
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceGroupSnapshot {
     pub outputs: Vec<SessionDisplay>,
@@ -964,9 +945,9 @@ pub struct WorkspaceSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowSnapshot {
     pub id: WindowId,
-    pub role: SurfaceRole,
     pub workspace_membership: Vec<WorkspaceId>,
     pub output_membership: Vec<SessionDisplay>,
+    pub session_display: Option<SessionDisplay>,
     pub minimized: bool,
     pub fullscreen: bool,
     pub sticky: bool,
@@ -1001,9 +982,8 @@ impl DesktopSnapshot {
             .windows
             .iter()
             .find(|window| window.id == *focused)?
-            .output_membership
-            .first()?
-            .clone();
+            .session_display
+            .clone()?;
         let visible_workspaces = self
             .workspace_groups
             .iter()
@@ -1020,7 +1000,6 @@ impl DesktopSnapshot {
             .filter(|id| {
                 self.windows.iter().any(|window| {
                     window.id == *id
-                        && window.role.is_switchable()
                         && (window.sticky
                             || window
                                 .workspace_membership
@@ -1179,10 +1158,21 @@ pub enum MruHistoryAccuracy {
     Accurate,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WorkspaceEligibilityDiagnostics {
+    #[default]
+    AwaitingSnapshot,
+    Ready,
+    MissingToplevelMembership {
+        advertised_version: u32,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServiceDiagnostics {
     pub mru_history: MruHistoryAccuracy,
     pub mru_order: Vec<WindowId>,
+    pub workspace_eligibility: WorkspaceEligibilityDiagnostics,
 }
 
 impl fmt::Display for ServiceDiagnostics {
@@ -1196,6 +1186,22 @@ impl fmt::Display for ServiceDiagnostics {
             "service: running\nmru_history: {mru_history}\nwindow_count: {}",
             self.mru_order.len()
         )?;
+        match self.workspace_eligibility {
+            WorkspaceEligibilityDiagnostics::AwaitingSnapshot => {
+                formatter.write_str("\nworkspace_eligibility: awaiting-snapshot")?;
+            }
+            WorkspaceEligibilityDiagnostics::Ready => {
+                formatter.write_str("\nworkspace_eligibility: ready")?;
+            }
+            WorkspaceEligibilityDiagnostics::MissingToplevelMembership { advertised_version } => {
+                write!(
+                    formatter,
+                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
+                     zcosmic_toplevel_info_v1 v{advertised_version} emitted no committed \
+                     ext-workspace membership snapshot"
+                )?;
+            }
+        }
         if !self.mru_order.is_empty() {
             formatter.write_str("\nmru_order:")?;
             for (position, id) in self.mru_order.iter().enumerate() {
@@ -1304,6 +1310,7 @@ pub struct SwitcherService {
     windows: Vec<TrackedWindow>,
     initial_discovery_complete: bool,
     active_session: Option<ActiveSession>,
+    workspace_eligibility: WorkspaceEligibilityDiagnostics,
 }
 
 impl SwitcherService {
@@ -1313,11 +1320,19 @@ impl SwitcherService {
             windows: Vec::new(),
             initial_discovery_complete: false,
             active_session: None,
+            workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
         }
     }
 
     pub const fn complete_initial_discovery(&mut self) {
         self.initial_discovery_complete = true;
+    }
+
+    pub const fn set_workspace_eligibility_diagnostics(
+        &mut self,
+        diagnostics: WorkspaceEligibilityDiagnostics,
+    ) {
+        self.workspace_eligibility = diagnostics;
     }
 
     pub fn observe(&mut self, event: WindowEvent) -> Vec<ServiceEffect> {
@@ -1492,6 +1507,7 @@ impl SwitcherService {
                 .iter()
                 .map(|window| window.id.clone())
                 .collect(),
+            workspace_eligibility: self.workspace_eligibility,
         }
     }
 }

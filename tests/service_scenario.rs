@@ -3,8 +3,8 @@
 use cosmic_window_switcher::{
     CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, HoldModifiers,
     InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
-    SessionDisplay, SurfaceRole, SwitcherGrid, SwitcherItem, SwitcherService, WindowEvent,
-    WindowId, WindowSnapshot, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
+    SessionDisplay, SwitcherGrid, SwitcherItem, SwitcherService, WindowEvent, WindowId,
+    WindowSnapshot, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 fn window(id: &str) -> WindowId {
@@ -402,7 +402,7 @@ fn keyboard_navigation_suspends_offscreen_capture_and_resumes_rows_when_revealed
 }
 
 #[test]
-fn minimized_mixed_windows_activate_through_one_behavior_without_changing_fullscreen_state() {
+fn minimized_and_fullscreen_mixed_windows_use_one_activation_behavior() {
     let visible_workspace = WorkspaceId::from("visible");
     let display = SessionDisplay::from("eDP-1");
     let desktop = DesktopSnapshot {
@@ -418,18 +418,18 @@ fn minimized_mixed_windows_activate_through_one_behavior_without_changing_fullsc
         windows: vec![
             WindowSnapshot {
                 id: window("fullscreen-native"),
-                role: SurfaceRole::Window,
                 workspace_membership: vec![visible_workspace.clone()],
                 output_membership: vec![display.clone()],
+                session_display: Some(display.clone()),
                 minimized: false,
                 fullscreen: true,
                 sticky: false,
             },
             WindowSnapshot {
                 id: window("minimized-xwayland"),
-                role: SurfaceRole::Window,
                 workspace_membership: vec![visible_workspace],
                 output_membership: vec![display],
+                session_display: Some(SessionDisplay::from("eDP-1")),
                 minimized: true,
                 fullscreen: false,
                 sticky: false,
@@ -457,9 +457,5 @@ fn minimized_mixed_windows_activate_through_one_behavior_without_changing_fullsc
     assert_eq!(
         service.handle(ServiceEvent::HoldModifiersChanged(HoldModifiers::empty())),
         vec![ServiceEffect::Activate(window("minimized-xwayland"))]
-    );
-    assert!(
-        desktop.windows[0].fullscreen,
-        "switching must not clear fullscreen state"
     );
 }
