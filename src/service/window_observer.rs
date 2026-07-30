@@ -443,8 +443,13 @@ impl ProtocolObserver {
             self.fallback(direction);
             return;
         }
-        if !self.workspace_snapshot_received || !self.toplevel_snapshot_received {
-            self.fallback(direction);
+        let workspace_fallback = self
+            .service
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .workspace_invocation_fallback(direction);
+        if let Some(effect) = workspace_fallback {
+            self.apply_effects(vec![effect]);
             return;
         }
         let Some(context) = self

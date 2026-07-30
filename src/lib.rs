@@ -1335,6 +1335,20 @@ impl SwitcherService {
         self.workspace_eligibility = diagnostics;
     }
 
+    #[must_use]
+    pub const fn workspace_invocation_fallback(
+        &self,
+        direction: InvocationDirection,
+    ) -> Option<ServiceEffect> {
+        match self.workspace_eligibility {
+            WorkspaceEligibilityDiagnostics::Ready => None,
+            WorkspaceEligibilityDiagnostics::AwaitingSnapshot
+            | WorkspaceEligibilityDiagnostics::MissingToplevelMembership { .. } => {
+                Some(ServiceEffect::FallbackToStockSwitcher(direction))
+            }
+        }
+    }
+
     pub fn observe(&mut self, event: WindowEvent) -> Vec<ServiceEffect> {
         let closed = match &event {
             WindowEvent::Closed(id) => Some(id.clone()),
