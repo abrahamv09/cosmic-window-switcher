@@ -293,21 +293,21 @@ impl FrameDamage {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, serde::Deserialize, PartialEq, Eq, serde::Serialize)]
 pub enum RefreshCeiling {
     Fps15,
     Fps30,
     Fps60,
-    MatchDisplay(u16),
+    MatchDisplay,
 }
 
 impl RefreshCeiling {
-    fn interval(self) -> Duration {
+    fn interval(self, display_refresh_rate: u16) -> Duration {
         let frames_per_second = match self {
             Self::Fps15 => 15,
             Self::Fps30 => 30,
             Self::Fps60 => 60,
-            Self::MatchDisplay(frames_per_second) => u64::from(frames_per_second.max(1)),
+            Self::MatchDisplay => u64::from(display_refresh_rate.max(1)),
         };
         Duration::from_nanos(1_000_000_000 / frames_per_second)
     }
@@ -349,6 +349,7 @@ struct CaptureStream {
 #[derive(Clone, Debug)]
 pub struct CaptureSessionModel {
     refresh_ceiling: RefreshCeiling,
+    display_refresh_rate: u16,
     streams: Vec<CaptureStream>,
     degraded: Vec<WindowId>,
     selected: Option<WindowId>,
@@ -359,10 +360,15 @@ impl CaptureSessionModel {
     pub const fn new(refresh_ceiling: RefreshCeiling) -> Self {
         Self {
             refresh_ceiling,
+            display_refresh_rate: 60,
             streams: Vec::new(),
             degraded: Vec::new(),
             selected: None,
         }
+    }
+
+    pub fn set_display_refresh_rate(&mut self, frames_per_second: u16) {
+        self.display_refresh_rate = frames_per_second.max(1);
     }
 
     pub fn set_visible(
@@ -447,7 +453,8 @@ impl CaptureSessionModel {
             return Vec::new();
         };
         stream.outstanding = false;
-        stream.next_request_at = Some(now + self.refresh_ceiling.interval());
+        stream.next_request_at =
+            Some(now + self.refresh_ceiling.interval(self.display_refresh_rate));
         if damage.is_empty() {
             Vec::new()
         } else {

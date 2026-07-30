@@ -3,7 +3,8 @@
 use anyhow::{Context, Result};
 use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
 use cosmic_window_switcher::{
-    CardSize, FractionalScale, GridLayout, GridRect, SwitcherGrid, SwitcherItem, ThumbnailFrame,
+    CardSize, FractionalScale, GridLayout, GridRect, OverlayPresentation, SwitcherGrid,
+    SwitcherItem, ThumbnailFrame,
 };
 
 use super::icons::{IconImage, IconResolver};
@@ -51,6 +52,7 @@ impl OverlayRenderer {
         surface_logical_height: u32,
         card_size: CardSize,
         scale: FractionalScale,
+        presentation: OverlayPresentation,
     ) -> Result<RenderedOverlay> {
         let font_scale = f32::from(
             u16::try_from(scale.protocol_units()).context("fractional scale is too large")?,
@@ -75,7 +77,7 @@ impl OverlayRenderer {
             &mut pixels,
             physical_width,
             Rect::new(0, 0, physical_width, physical_height),
-            Color::rgba(24, 27, 36, 246),
+            Color::rgba(24, 27, 36, presentation.dimming().alpha()),
         );
 
         for (index, item) in grid.items().iter().enumerate() {
@@ -91,6 +93,7 @@ impl OverlayRenderer {
                 item,
                 bounds,
                 (scale, font_scale),
+                presentation,
             );
         }
 
@@ -119,6 +122,7 @@ impl OverlayRenderer {
         item: &SwitcherItem,
         bounds: GridRect,
         scale: (FractionalScale, f32),
+        presentation: OverlayPresentation,
     ) {
         let (scale, font_scale) = scale;
         let (item_width, item_height) = bounds.size();
@@ -128,19 +132,25 @@ impl OverlayRenderer {
         let physical_item_width = scale.physical_length(item_width);
         let physical_item_height = scale.physical_length(item_height);
         let item_rect = Rect::new(x, y, physical_item_width, physical_item_height);
-        let item_color = if item.is_selected() {
+        let item_color = if presentation.high_contrast() {
+            Color::rgb(0, 0, 0)
+        } else if item.is_selected() {
             Color::rgb(38, 92, 150)
         } else {
             Color::rgb(45, 49, 62)
         };
         fill_rect(pixels, surface_width, item_rect, item_color);
-        if item.is_selected() {
+        if item.is_selected() || presentation.high_contrast() {
             stroke_rect(
                 pixels,
                 surface_width,
                 item_rect,
-                scale.physical_length(3),
-                Color::rgb(124, 189, 255),
+                scale.physical_length(if item.is_selected() { 4 } else { 1 }),
+                if presentation.high_contrast() {
+                    Color::rgb(255, 255, 255)
+                } else {
+                    Color::rgb(124, 189, 255)
+                },
             );
         }
 

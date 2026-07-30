@@ -7,17 +7,18 @@ use accesskit::{
     TreeId, TreeUpdate,
 };
 use accesskit_unix::Adapter;
-use cosmic_window_switcher::SwitcherGrid;
+use cosmic_window_switcher::{Locale, StringKey, SwitcherGrid};
 
 const ROOT_NODE_ID: NodeId = NodeId(0);
 
 pub(super) struct AccessibilityBridge {
     adapter: Adapter,
     latest_tree: SharedTree,
+    locale: Locale,
 }
 
 impl AccessibilityBridge {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(locale: Locale) -> Self {
         let latest_tree = SharedTree::default();
         let adapter = Adapter::new(
             TreeActivation {
@@ -29,11 +30,16 @@ impl AccessibilityBridge {
         Self {
             adapter,
             latest_tree,
+            locale,
         }
     }
 
+    pub(super) fn set_locale(&mut self, locale: Locale) {
+        self.locale = locale;
+    }
+
     pub(super) fn update(&mut self, grid: &SwitcherGrid) {
-        let update = tree_update(grid);
+        let update = tree_update(grid, self.locale);
         self.latest_tree.replace(Some(update.clone()));
         self.adapter.update_if_active(|| update);
         self.adapter.update_window_focus_state(true);
@@ -42,7 +48,9 @@ impl AccessibilityBridge {
     pub(super) fn hide(&mut self) {
         self.latest_tree.replace(None);
         self.adapter.update_window_focus_state(false);
-        self.adapter.update_if_active(hidden_tree_update);
+        let locale = self.locale;
+        self.adapter
+            .update_if_active(move || hidden_tree_update(locale));
     }
 }
 
@@ -87,25 +95,29 @@ impl DeactivationHandler for IgnoreDeactivation {
     fn deactivate_accessibility(&mut self) {}
 }
 
-fn tree_update(grid: &SwitcherGrid) -> TreeUpdate {
+fn tree_update(grid: &SwitcherGrid, locale: Locale) -> TreeUpdate {
     let item_ids = (1_u64..)
         .take(grid.items().len())
         .map(NodeId::from)
         .collect::<Vec<_>>();
     let mut root = Node::new(Role::ListBox);
-    root.set_label("COSMIC Window Switcher".to_owned());
+    root.set_label(locale.text(StringKey::WindowSwitcher).to_owned());
+    root.set_description(locale.text(StringKey::InteractionInstructions).to_owned());
     root.set_children(item_ids.clone());
     root.set_size_of_set(grid.items().len());
 
     let mut nodes = Vec::with_capacity(grid.items().len() + 1);
     nodes.push((ROOT_NODE_ID, root));
     let mut focus = ROOT_NODE_ID;
-    for ((position, item), node_id) in grid.items().iter().enumerate().zip(item_ids) {
+    for (item, node_id) in grid.items().iter().zip(item_ids) {
+        let semantics = item.accessibility(locale);
         let mut node = Node::new(Role::ListBoxOption);
-        node.set_label(item.accessible_name().to_owned());
-        node.set_position_in_set(position + 1);
-        node.set_selected(item.is_selected());
-        if item.is_selected() {
+        node.set_label(semantics.name().to_owned());
+        node.set_description(semantics.instructions().to_owned());
+        node.set_position_in_set(semantics.position());
+        node.set_size_of_set(semantics.set_size());
+        node.set_selected(semantics.is_selected());
+        if semantics.is_selected() {
             focus = node_id;
         }
         nodes.push((node_id, node));
@@ -121,9 +133,9 @@ fn tree_update(grid: &SwitcherGrid) -> TreeUpdate {
     }
 }
 
-fn hidden_tree_update() -> TreeUpdate {
+fn hidden_tree_update(locale: Locale) -> TreeUpdate {
     let mut root = Node::new(Role::ListBox);
-    root.set_label("COSMIC Window Switcher".to_owned());
+    root.set_label(locale.text(StringKey::WindowSwitcher).to_owned());
     TreeUpdate {
         nodes: vec![(ROOT_NODE_ID, root)],
         tree: Some(Tree::new(ROOT_NODE_ID)),

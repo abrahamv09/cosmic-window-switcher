@@ -535,6 +535,9 @@ impl WorkspaceMoveProbe {
         })
     }
 
+    // The Wayland proxy identity is the protocol-defined lookup key. Enabling
+    // libcosmic's dynamic backend adds an internal liveness flag to that proxy.
+    #[allow(clippy::mutable_key_type)]
     fn select_output(
         &self,
         candidates: &[wl_output::WlOutput],
@@ -587,6 +590,9 @@ impl WorkspaceMoveProbe {
             .collect())
     }
 
+    // The Wayland proxy identity is the protocol-defined lookup key. Enabling
+    // libcosmic's dynamic backend adds an internal liveness flag to that proxy.
+    #[allow(clippy::mutable_key_type)]
     fn membership_ids(
         &self,
         handles: &std::collections::HashSet<ext_workspace_handle_v1::ExtWorkspaceHandleV1>,

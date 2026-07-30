@@ -7,6 +7,7 @@ use cosmic_window_switcher::InvocationDirection;
 mod cosmic_session;
 mod probe;
 mod service;
+mod settings;
 mod shm_capture;
 mod workspace_move_probe;
 
@@ -27,6 +28,8 @@ enum Command {
     Service,
     /// Report the resident service's current MRU Order.
     Status,
+    /// Configure visual and performance preferences.
+    Settings,
     /// Request a forward or reverse Window switch from the resident service.
     Invoke {
         #[command(subcommand)]
@@ -79,6 +82,7 @@ fn main() -> Result<()> {
             println!("{}", service::status()?);
             Ok(())
         }
+        Command::Settings => settings::run(),
         Command::Invoke { direction } => service::invoke(direction.into()),
         Command::Probe {
             include_titles,

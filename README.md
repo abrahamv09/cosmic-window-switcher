@@ -93,6 +93,29 @@ Warm-up means the service restarted with pre-existing Windows whose relative
 focus history cannot be reconstructed. Opaque Window identities are shown so
 the MRU Order can be verified; Window titles and pixels are never included.
 
+## Configure the switcher
+
+Open the standalone native libcosmic settings window:
+
+```sh
+cargo run --release -- settings
+```
+
+The window follows the desktop locale in English or Spanish and saves each
+change immediately through the version-1 `cosmic-config` namespace
+`io.github.abrahamv09.CosmicWindowSwitcher`. It owns only card size, background
+dimming, Refresh Ceiling, animations, and reveal delay. Defaults are medium
+cards, light dimming, 30 FPS, animations enabled, and a 100 ms reveal delay.
+Missing or invalid fields recover independently, and recognized legacy values
+migrate without changing COSMIC-owned settings.
+
+Saved changes apply when the next Switching Session starts; an open Switcher
+Grid keeps its immutable Session Preferences. Match-display refresh is labeled
+as the higher-resource choice and follows the current mode of the Session
+Display. The settings window reports COSMIC's current forward and reverse
+shortcut assignments and opens COSMIC Keyboard Settings for changes rather
+than recording shortcuts itself.
+
 ## Invoke quick switching
 
 With the resident service running, request forward or reverse switching through
@@ -137,6 +160,12 @@ the selected Window's fullscreen state. Closed Windows disappear without
 reordering survivors, while Windows opened during switching wait for the next
 Switching Session. When all rows do not fit, rendering follows the selected row
 so it remains visible.
+
+The overlay follows COSMIC high-contrast state and suppresses animation when
+the desktop reduced-motion policy is active. Its AT-SPI tree exposes localized
+English or Spanish names, selected state, set position and size, focus, and
+keyboard interaction instructions whenever assistive technology activates the
+tree.
 
 The default Window Scope is All Workspaces. Every independently exposed
 application Window enters one global MRU Order regardless of its workspace.

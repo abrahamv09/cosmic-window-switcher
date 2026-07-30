@@ -6,12 +6,20 @@ use std::{
     ops::{BitOr, Range},
 };
 
+mod accessibility;
 mod capture;
+mod localization;
+mod preferences;
 
+pub use accessibility::{AccessibilityPolicy, AccessibleSwitcherItem, OverlayPresentation};
 pub use capture::{
     BufferTransform, CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage,
     InvalidThumbnailFrame, RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout,
     ThumbnailFrame,
+};
+pub use localization::{Locale, StringKey};
+pub use preferences::{
+    Dimming, PreferencesStore, RevealDelay, SessionPreferences, SwitcherPreferences,
 };
 
 pub const APPLICATION_ID: &str = "io.github.abrahamv09.CosmicWindowSwitcher";
@@ -449,6 +457,17 @@ impl SwitcherItem {
     pub const fn is_selected(&self) -> bool {
         self.selected
     }
+
+    #[must_use]
+    pub fn accessibility(&self, locale: Locale) -> AccessibleSwitcherItem<'_> {
+        AccessibleSwitcherItem::new(
+            &self.title,
+            self.selected,
+            self.position,
+            self.set_size,
+            locale,
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -469,7 +488,7 @@ impl Error for UnknownGridSelection {}
 const GRID_ITEM_GAP: u32 = 12;
 const GRID_PADDING: u32 = 16;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub enum CardSize {
     Small,
     #[default]

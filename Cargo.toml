@@ -27,11 +27,14 @@ accesskit = "0.24.1"
 accesskit_unix = "0.22.1"
 anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
+cosmic-config = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe2902a52166492654bb9fee8a73d1", default-features = false }
 cosmic-client-toolkit = "0.2.0"
 cosmic-protocols = { version = "0.2.0", default-features = false, features = ["client"] }
+cosmic-settings-config = { git = "https://github.com/pop-os/cosmic-settings-daemon", rev = "21a9692b53fcbffa0f18f7d0a12bf0f9d5bd0590" }
 cosmic-text = "0.19.0"
 freedesktop-icons = "0.4.0"
 image = { version = "0.25.8", default-features = false, features = ["png"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "dc1cf9f00cbe2902a52166492654bb9fee8a73d1", default-features = false, features = ["a11y", "tokio", "wayland"] }
 resvg = { version = "0.45.1", default-features = false }
 rustix = { version = "1.1.4", features = ["event"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -39,3 +42,6 @@ smithay-client-toolkit = "0.20.0"
 wayland-client = "0.31.11"
 wayland-protocols = { version = "0.32.9", features = ["client", "staging"] }
 zbus = "5.18.0"
+
+[dev-dependencies]
+tempfile = "3.23.0"

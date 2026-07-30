@@ -54,11 +54,13 @@ use wayland_protocols::wp::{
 };
 
 use cosmic_window_switcher::{
-    APPLICATION_ID, CaptureEffect, CaptureFailure, CaptureSessionModel, CardSize, DesktopSnapshot,
-    FractionalScale, GridLayout, HoldModifiers, InvocationDirection, InvocationRequest,
-    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout,
-    SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowScope, WindowSnapshot,
-    WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
+    APPLICATION_ID, AccessibilityPolicy, CaptureEffect, CaptureFailure, CaptureSessionModel,
+    DesktopSnapshot, FractionalScale, GridLayout, HoldModifiers, InvocationDirection,
+    InvocationRequest, Locale, OverlayPresentation, PreferencesStore, RefreshCeiling,
+    ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences, ShmConstraints,
+    ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowScope,
+    WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
+    WorkspaceSnapshot,
 };
 
 use super::{
@@ -72,7 +74,6 @@ use crate::shm_capture::{
     ShmCaptureState, duration_to_timespec,
 };
 
-const REVEAL_DELAY: Duration = Duration::from_millis(100);
 const SESSION_READINESS_TIMEOUT: Duration = Duration::from_millis(500);
 const TOPLEVEL_INFO_INTERFACE: &str = "zcosmic_toplevel_info_v1";
 const WORKSPACE_MANAGER_INTERFACE: &str = "ext_workspace_manager_v1";
@@ -85,6 +86,49 @@ fn advertised_global_version(globals: &GlobalList, interface: &str) -> Option<u3
             .find(|global| global.interface == interface)
             .map(|global| global.version)
     })
+}
+
+fn advertised_cosmic_versions(globals: &GlobalList) -> (Option<u32>, Option<u32>) {
+    (
+        advertised_global_version(globals, TOPLEVEL_INFO_INTERFACE),
+        advertised_global_version(globals, WORKSPACE_MANAGER_INTERFACE),
+    )
+}
+
+fn cosmic_accessibility_policy() -> AccessibilityPolicy {
+    let high_contrast = cosmic::theme::system_preference()
+        .theme_type
+        .is_high_contrast();
+    let reduced_motion = cosmic_config::Config::new("com.system76.CosmicTk", 1)
+        .ok()
+        .and_then(|config| cosmic_config::ConfigGet::get(&config, "reduced_motion").ok())
+        .unwrap_or(false);
+    AccessibilityPolicy::new(false, high_contrast, reduced_motion)
+}
+
+struct PreferenceState {
+    store: PreferencesStore,
+    session: SessionPreferences,
+    presentation: OverlayPresentation,
+}
+
+impl PreferenceState {
+    fn open() -> Result<Self> {
+        let store = PreferencesStore::open().context("open app-owned Switcher Preferences")?;
+        let session = store.load().snapshot();
+        let presentation = OverlayPresentation::resolve(&session, cosmic_accessibility_policy());
+        Ok(Self {
+            store,
+            session,
+            presentation,
+        })
+    }
+
+    fn snapshot(&mut self) {
+        self.session = self.store.load().snapshot();
+        self.presentation =
+            OverlayPresentation::resolve(&self.session, cosmic_accessibility_policy());
+    }
 }
 
 pub(super) struct WindowObserver {
@@ -104,10 +148,8 @@ impl WindowObserver {
         let (globals, event_queue) =
             registry_queue_init(&connection).context("read Wayland globals")?;
         let queue_handle = event_queue.handle();
-        let advertised_toplevel_info_version =
-            advertised_global_version(&globals, TOPLEVEL_INFO_INTERFACE);
-        let advertised_workspace_manager_version =
-            advertised_global_version(&globals, WORKSPACE_MANAGER_INTERFACE);
+        let (advertised_toplevel_info_version, advertised_workspace_manager_version) =
+            advertised_cosmic_versions(&globals);
         let compositor =
             CompositorState::bind(&globals, &queue_handle).context("bind wl_compositor")?;
         let layer_shell =
@@ -142,6 +184,7 @@ impl WindowObserver {
         let toplevel_manager = ToplevelManagerState::try_new(&registry_state, &queue_handle)
             .context("the compositor does not expose COSMIC Window management")?;
         let workspace_state = WorkspaceState::new(&registry_state, &queue_handle);
+        let preferences = PreferenceState::open()?;
         let state = ProtocolObserver {
             queue_handle: queue_handle.clone(),
             registry_state,
@@ -168,9 +211,9 @@ impl WindowObserver {
             advertised_workspace_manager_version,
             workspace_snapshot_received: false,
             toplevel_snapshot_received: false,
-            accessibility: AccessibilityBridge::new(),
+            accessibility: AccessibilityBridge::new(Locale::detect()),
             overlay_renderer: OverlayRenderer::new(),
-            session_card_size: CardSize::Medium,
+            preferences,
             layer: None,
             readiness_pool: None,
             readiness_buffer: None,
@@ -334,7 +377,7 @@ struct ProtocolObserver {
     toplevel_snapshot_received: bool,
     accessibility: AccessibilityBridge,
     overlay_renderer: OverlayRenderer,
-    session_card_size: CardSize,
+    preferences: PreferenceState,
     layer: Option<LayerSurface>,
     readiness_pool: Option<RawPool>,
     readiness_buffer: Option<wl_buffer::WlBuffer>,
@@ -472,6 +515,8 @@ impl ProtocolObserver {
             return;
         };
 
+        self.snapshot_session_preferences(&session_output);
+
         let surface = self.compositor.create_surface(queue_handle);
         let layer = self.layer_shell.create_layer_surface(
             queue_handle,
@@ -501,8 +546,27 @@ impl ProtocolObserver {
         self.pending_direction = Some(direction);
         self.initial_hold_modifiers = None;
         let now = Instant::now();
-        self.reveal_at = Some(now + REVEAL_DELAY);
+        self.reveal_at = Some(now + self.preferences.session.reveal_delay().duration());
         self.readiness_deadline = Some(now + SESSION_READINESS_TIMEOUT);
+    }
+
+    fn snapshot_session_preferences(&mut self, session_output: &wl_output::WlOutput) {
+        self.preferences.snapshot();
+        self.accessibility.set_locale(Locale::detect());
+        self.capture_model = CaptureSessionModel::new(self.preferences.session.refresh_ceiling());
+        if self.preferences.session.refresh_ceiling() == RefreshCeiling::MatchDisplay
+            && let Some(refresh_rate) = self
+                .output_state
+                .info(session_output)
+                .and_then(|info| {
+                    info.modes
+                        .into_iter()
+                        .find(|mode| mode.current && mode.refresh_rate > 0)
+                })
+                .and_then(|mode| u16::try_from((mode.refresh_rate + 999) / 1_000).ok())
+        {
+            self.capture_model.set_display_refresh_rate(refresh_rate);
+        }
     }
 
     fn poll_timeout(&self) -> Option<Duration> {
@@ -1055,8 +1119,9 @@ impl ProtocolObserver {
                 .context("the Switching Session has no Switcher Grid")?,
             surface_width,
             surface_height,
-            self.session_card_size,
+            self.preferences.session.card_size(),
             scale,
+            self.preferences.presentation,
         )?;
         self.install_rendered_grid(rendered)
     }

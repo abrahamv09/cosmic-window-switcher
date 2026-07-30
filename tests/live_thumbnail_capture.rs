@@ -88,6 +88,34 @@ fn changed_content_refreshes_at_the_ceiling_while_unchanged_content_is_not_prese
 }
 
 #[test]
+fn match_display_uses_the_session_displays_current_refresh_rate() {
+    let mut captures = CaptureSessionModel::new(RefreshCeiling::MatchDisplay);
+    captures.set_display_refresh_rate(120);
+    captures.set_visible([window("selected")]);
+    captures.initialized(&window("selected"), &constraints());
+    captures.frame_ready(
+        &window("selected"),
+        Duration::ZERO,
+        &[FrameDamage::new(0, 0, 1_920, 1_080)],
+    );
+
+    assert!(captures.refresh_due(Duration::from_millis(8)).is_empty());
+    assert_eq!(
+        captures.refresh_due(Duration::from_millis(9)),
+        vec![CaptureEffect::RequestFrame {
+            window: window("selected"),
+            layout: ShmFrameLayout {
+                width: 1_920,
+                height: 1_080,
+                stride: 7_680,
+                byte_len: 8_294_400,
+                format: ShmFormat::Argb8888,
+            },
+        }]
+    );
+}
+
+#[test]
 fn one_window_failure_degrades_only_that_switcher_item() {
     let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
     captures.set_visible([window("native"), window("xwayland")]);
