@@ -39,10 +39,24 @@
   final two criteria still requires a human session with ten visible Windows,
   so the ticket is handed off as `ready-for-human` rather than marked resolved.
 - Final verification passed formatting, all-target type checking, strict
-  all-target/all-feature Clippy, all 95 tests, and an optimized release build.
+  all-target/all-feature Clippy, all 97 tests, and an optimized release build.
 - Manual restart exposed a latent runtime-feature conflict from the settings
   implementation: libcosmic enabled zbus's Tokio backend while the resident
   service uses zbus's blocking API. Switching libcosmic to its supported smol
   executor kept the UI asynchronous and restored zbus's compatible async-io
   backend. An isolated real-process D-Bus/Wayland startup reproduced the exact
   reactor panic before the change and remained alive without a panic after it.
+- Human validation with nine open Windows reported smooth Live Thumbnails at
+  30 FPS, 60 FPS, and match-display refresh. It also exposed that Large cards
+  used two exact rows with no continuation cue and devoted too much space to
+  metadata. Overflow layouts now include a clipped, live half-row when the
+  remaining viewport can hold it, and cards use a smaller footer, icon, title,
+  and thumbnail inset so Window content remains dominant.
+- CLI invocation deliberately enters Latch Mode; pressing the still-stock
+  COSMIC Alt+Tab action during that temporary test launches the stock switcher
+  on top. The semantic shortcut remains COSMIC-owned until ticket 13 installs
+  the reversible app command. Plain Tab and Shift+Tab navigate Latch Mode.
+- The tester also reported thumbnails turning gray around COSMIC screenshot
+  capture. The supplied screenshots contain live content, so that state still
+  needs a post-capture screenshot or exact persistence steps before it can be
+  reproduced and diagnosed without guessing.

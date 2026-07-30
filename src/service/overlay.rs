@@ -9,6 +9,31 @@ use cosmic_window_switcher::{
 
 use super::icons::{IconImage, IconResolver};
 
+#[derive(Clone, Copy)]
+struct CardGeometry {
+    thumbnail_padding: u32,
+    footer_height: u32,
+    footer_padding: u32,
+    icon_size: u32,
+    title_gap: u32,
+    title_font_size: f32,
+    title_line_height: f32,
+}
+
+fn card_geometry(item_width: u32, item_height: u32) -> CardGeometry {
+    let footer_height = (item_height / 6).max(1);
+    let title_font_size = f32::from(u16::try_from(item_height).unwrap_or(u16::MAX)) / 22.0;
+    CardGeometry {
+        thumbnail_padding: (item_width / 64).max(3),
+        footer_height,
+        footer_padding: (item_width / 32).max(3),
+        icon_size: footer_height.saturating_mul(2) / 3,
+        title_gap: (item_width / 64).max(3),
+        title_font_size,
+        title_line_height: title_font_size * 1.25,
+    }
+}
+
 pub(super) struct RenderedOverlay {
     pub(super) dimensions: OverlayDimensions,
     pub(super) pixels: Vec<u8>,
@@ -73,11 +98,12 @@ impl OverlayRenderer {
             .context("Switcher Grid area overflow")?;
         let mut pixels =
             vec![0_u32; usize::try_from(pixel_count).context("Switcher Grid is too large")?];
+        let background = Color::rgba(24, 27, 36, presentation.dimming().alpha());
         fill_rect(
             &mut pixels,
             physical_width,
             Rect::new(0, 0, physical_width, physical_height),
-            Color::rgba(24, 27, 36, presentation.dimming().alpha()),
+            background,
         );
 
         for (index, item) in grid.items().iter().enumerate() {
@@ -96,6 +122,14 @@ impl OverlayRenderer {
                 presentation,
             );
         }
+        clip_items_to_viewport(
+            &mut pixels,
+            physical_width,
+            physical_height,
+            layout.viewport_bounds(),
+            scale,
+            background,
+        );
         apply_opacity(&mut pixels, presentation.rendered_opacity());
 
         let mut bytes = Vec::with_capacity(pixels.len() * size_of::<u32>());
@@ -127,7 +161,6 @@ impl OverlayRenderer {
     ) {
         let (scale, font_scale) = scale;
         let (item_width, item_height) = bounds.size();
-        let item_height_f32 = f32::from(u16::try_from(item_height).unwrap_or(u16::MAX));
         let x = scale.physical_length(bounds.x());
         let y = scale.physical_length(bounds.y());
         let physical_item_width = scale.physical_length(item_width);
@@ -155,8 +188,9 @@ impl OverlayRenderer {
             );
         }
 
-        let thumbnail_padding = item_width / 27;
-        let footer_height = item_height / 4;
+        let geometry = card_geometry(item_width, item_height);
+        let thumbnail_padding = geometry.thumbnail_padding;
+        let footer_height = geometry.footer_height;
         let thumbnail_rect = Rect::new(
             x + scale.physical_length(thumbnail_padding),
             y + scale.physical_length(thumbnail_padding),
@@ -175,8 +209,8 @@ impl OverlayRenderer {
         }
 
         let footer_top = item_height.saturating_sub(footer_height);
-        let footer_padding = item_width / 20;
-        let icon_size = footer_height.saturating_mul(3) / 5;
+        let footer_padding = geometry.footer_padding;
+        let icon_size = geometry.icon_size;
         let icon_y = footer_top + footer_height.saturating_sub(icon_size) / 2;
         let icon_rect = Rect::new(
             x + scale.physical_length(footer_padding),
@@ -206,13 +240,13 @@ impl OverlayRenderer {
                 icon_rect.y + icon_rect.height / 8,
                 icon_rect.width / 2,
                 icon_rect.height.saturating_mul(3) / 4,
-                (item_height_f32 * 0.075) * font_scale,
-                (item_height_f32 * 0.092) * font_scale,
+                (f32::from(u16::try_from(icon_size).unwrap_or(u16::MAX)) * 0.5) * font_scale,
+                (f32::from(u16::try_from(icon_size).unwrap_or(u16::MAX)) * 0.625) * font_scale,
                 Color::rgb(255, 255, 255),
             );
         }
-        let title_x = footer_padding + icon_size + item_width / 27;
-        let title_y = footer_top + footer_height / 4;
+        let title_x = footer_padding + icon_size + geometry.title_gap;
+        let title_y = footer_top + footer_height.saturating_sub(icon_size) / 2;
         self.draw_text(
             pixels,
             surface_width,
@@ -220,9 +254,9 @@ impl OverlayRenderer {
             x + scale.physical_length(title_x),
             y + scale.physical_length(title_y),
             scale.physical_length(item_width.saturating_sub(title_x + footer_padding)),
-            scale.physical_length(footer_height / 2),
-            (item_height_f32 / 15.0) * font_scale,
-            (item_height_f32 * 0.092) * font_scale,
+            scale.physical_length(icon_size),
+            geometry.title_font_size * font_scale,
+            geometry.title_line_height * font_scale,
             Color::rgb(250, 251, 255),
         );
     }
@@ -277,6 +311,65 @@ impl OverlayRenderer {
             },
         );
     }
+}
+
+fn clip_items_to_viewport(
+    pixels: &mut [u32],
+    surface_width: u32,
+    surface_height: u32,
+    viewport: GridRect,
+    scale: FractionalScale,
+    background: Color,
+) {
+    let viewport_x = scale.physical_length(viewport.x());
+    let viewport_y = scale.physical_length(viewport.y());
+    let (viewport_width, viewport_height) = viewport.size();
+    let viewport_width = scale.physical_length(viewport_width);
+    let viewport_height = scale.physical_length(viewport_height);
+    let viewport_right = viewport_x.saturating_add(viewport_width).min(surface_width);
+    let viewport_bottom = viewport_y
+        .saturating_add(viewport_height)
+        .min(surface_height);
+
+    fill_rect(
+        pixels,
+        surface_width,
+        Rect::new(0, 0, surface_width, viewport_y.min(surface_height)),
+        background,
+    );
+    fill_rect(
+        pixels,
+        surface_width,
+        Rect::new(
+            0,
+            viewport_bottom,
+            surface_width,
+            surface_height.saturating_sub(viewport_bottom),
+        ),
+        background,
+    );
+    fill_rect(
+        pixels,
+        surface_width,
+        Rect::new(
+            0,
+            viewport_y,
+            viewport_x.min(surface_width),
+            viewport_bottom.saturating_sub(viewport_y),
+        ),
+        background,
+    );
+    fill_rect(
+        pixels,
+        surface_width,
+        Rect::new(
+            viewport_right,
+            viewport_y,
+            surface_width.saturating_sub(viewport_right),
+            viewport_bottom.saturating_sub(viewport_y),
+        ),
+        background,
+    );
 }
 
 fn apply_opacity(pixels: &mut [u32], opacity: u8) {
@@ -485,5 +578,20 @@ fn draw_thumbnail(
                 *target = color.0;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod card_geometry_tests {
+    use super::card_geometry;
+
+    #[test]
+    fn card_geometry_prioritizes_thumbnail_content_over_metadata() {
+        let geometry = card_geometry(400, 300);
+
+        assert!(geometry.thumbnail_padding <= 7);
+        assert!(geometry.footer_height <= 50);
+        assert!(geometry.icon_size <= 34);
+        assert!(geometry.title_font_size <= 14.0);
     }
 }

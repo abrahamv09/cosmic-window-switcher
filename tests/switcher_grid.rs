@@ -174,6 +174,34 @@ fn continuous_layout_wraps_fixed_size_cards_without_pages() {
 }
 
 #[test]
+fn overflow_layout_peeks_at_half_of_the_next_row_when_space_remains() {
+    let mut grid = SwitcherGrid::new(
+        SessionDisplay::from("eDP-1"),
+        (0..9).map(|index| {
+            item(
+                &format!("window-{index}"),
+                "com.example.Application",
+                &format!("Window {index}"),
+            )
+        }),
+        &WindowId::from("window-1"),
+    )
+    .expect("the selected Window belongs to the grid");
+
+    let layout = grid.layout(1_316, 822, CardSize::Large);
+    let peeked = layout
+        .item_bounds(6)
+        .expect("the first item in the next row peeks into the viewport");
+
+    assert_eq!(layout.columns(), 3);
+    assert_eq!(layout.total_rows(), 3);
+    assert_eq!(layout.visible_rows(), 2);
+    assert_eq!(layout.visible_item_range(), 0..9);
+    assert!(layout.logical_size().1.saturating_sub(peeked.y()) >= 150);
+    assert!(layout.logical_size().1.saturating_sub(peeked.y()) < 300);
+}
+
+#[test]
 fn layout_reveals_the_selected_row_and_hit_tests_fractional_pointer_positions() {
     let mut grid = SwitcherGrid::new(
         SessionDisplay::from("eDP-1"),

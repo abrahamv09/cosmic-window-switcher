@@ -626,6 +626,16 @@ impl GridLayout {
     }
 
     #[must_use]
+    pub const fn viewport_bounds(&self) -> GridRect {
+        GridRect {
+            x: self.origin.0,
+            y: self.origin.1,
+            width: self.logical_size.0,
+            height: self.logical_size.1,
+        }
+    }
+
+    #[must_use]
     pub fn centered_in(mut self, logical_width: u32, logical_height: u32) -> Self {
         self.origin = (
             logical_width.saturating_sub(self.logical_size.0) / 2,
@@ -657,6 +667,14 @@ impl GridLayout {
 
     #[must_use]
     pub fn item_at(&self, x: f64, y: f64) -> Option<usize> {
+        let viewport = self.viewport_bounds();
+        if x < f64::from(viewport.x)
+            || x >= f64::from(viewport.x.saturating_add(viewport.width))
+            || y < f64::from(viewport.y)
+            || y >= f64::from(viewport.y.saturating_add(viewport.height))
+        {
+            return None;
+        }
         self.visible_item_range.clone().find(|item_index| {
             self.item_bounds(*item_index).is_some_and(|bounds| {
                 let right = bounds.x.saturating_add(bounds.width);
@@ -792,17 +810,39 @@ impl SwitcherGrid {
         let visible_rows = total_rows
             .min(usize::try_from(maximum_visible_rows).unwrap_or(usize::MAX))
             .max(usize::from(!self.items.is_empty()));
-        let visible_item_range = self.visible_item_range(columns, visible_rows);
+        let fully_visible_item_range = self.visible_item_range(columns, visible_rows);
         let columns_u32 = u32::try_from(columns).unwrap_or(u32::MAX);
         let visible_rows_u32 = u32::try_from(visible_rows).unwrap_or(u32::MAX);
         let logical_width = 2 * GRID_PADDING
             + columns_u32.saturating_mul(card_width)
             + columns_u32.saturating_sub(1).saturating_mul(GRID_ITEM_GAP);
-        let logical_height = 2 * GRID_PADDING
+        let fully_visible_height = 2 * GRID_PADDING
             + visible_rows_u32.saturating_mul(card_height)
             + visible_rows_u32
                 .saturating_sub(1)
                 .saturating_mul(GRID_ITEM_GAP);
+        let peek_height = card_height / 2;
+        let peek_fits = fully_visible_item_range.end < item_count
+            && fully_visible_height
+                .saturating_add(GRID_ITEM_GAP)
+                .saturating_add(peek_height)
+                <= available_height;
+        let visible_item_range = if peek_fits {
+            fully_visible_item_range.start
+                ..fully_visible_item_range
+                    .end
+                    .saturating_add(columns)
+                    .min(item_count)
+        } else {
+            fully_visible_item_range
+        };
+        let logical_height = if peek_fits {
+            fully_visible_height
+                .saturating_add(GRID_ITEM_GAP)
+                .saturating_add(peek_height)
+        } else {
+            fully_visible_height
+        };
 
         GridLayout {
             columns,
