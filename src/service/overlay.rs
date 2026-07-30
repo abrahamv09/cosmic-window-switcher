@@ -1,25 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use std::{collections::HashMap, path::Path};
+
 use anyhow::{Context, Result};
 use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
-use cosmic_window_switcher::{ApplicationIcon, SwitcherCard, SwitcherGrid};
+use cosmic_window_switcher::{ApplicationIcon, SwitcherGrid, SwitcherItem};
+use image::imageops::FilterType;
 
-const CARD_WIDTH: u32 = 220;
-const CARD_HEIGHT: u32 = 116;
-const CARD_GAP: u32 = 12;
+const ITEM_WIDTH: u32 = 220;
+const ITEM_HEIGHT: u32 = 116;
+const ITEM_GAP: u32 = 12;
 const GRID_PADDING: u32 = 16;
 const ICON_SIZE: u32 = 56;
 
 pub(super) struct RenderedOverlay {
+    pub(super) dimensions: OverlayDimensions,
+    pub(super) pixels: Vec<u8>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct OverlayDimensions {
     pub(super) logical_width: u32,
     pub(super) logical_height: u32,
     pub(super) scale: i32,
-    pub(super) pixels: Vec<u8>,
 }
 
 pub(super) struct OverlayRenderer {
     font_system: FontSystem,
     swash_cache: SwashCache,
+    icons: IconResolver,
 }
 
 impl OverlayRenderer {
@@ -27,6 +36,7 @@ impl OverlayRenderer {
         Self {
             font_system: FontSystem::new(),
             swash_cache: SwashCache::new(),
+            icons: IconResolver::default(),
         }
     }
 
@@ -34,21 +44,37 @@ impl OverlayRenderer {
         &mut self,
         grid: &SwitcherGrid,
         maximum_logical_width: u32,
+        maximum_logical_height: u32,
         scale: i32,
     ) -> Result<RenderedOverlay> {
         let scale = scale.max(1);
         let physical_scale = u32::try_from(scale).context("invalid output scale")?;
         let font_scale = f32::from(u16::try_from(scale).context("output scale is too large")?);
-        let card_count = u32::try_from(grid.cards().len()).context("too many Switcher Items")?;
-        let available_width = maximum_logical_width.max(CARD_WIDTH + 2 * GRID_PADDING);
+        let item_count = u32::try_from(grid.items().len()).context("too many Switcher Items")?;
+        let available_width = maximum_logical_width.max(ITEM_WIDTH + 2 * GRID_PADDING);
         let maximum_columns =
-            ((available_width - 2 * GRID_PADDING + CARD_GAP) / (CARD_WIDTH + CARD_GAP)).max(1);
-        let columns = card_count.clamp(1, maximum_columns);
-        let rows = card_count.div_ceil(columns);
+            ((available_width - 2 * GRID_PADDING + ITEM_GAP) / (ITEM_WIDTH + ITEM_GAP)).max(1);
+        let columns = item_count.clamp(1, maximum_columns);
+        let rows = item_count.div_ceil(columns);
+        let available_height = maximum_logical_height.max(ITEM_HEIGHT + 2 * GRID_PADDING);
+        let maximum_rows =
+            ((available_height - 2 * GRID_PADDING + ITEM_GAP) / (ITEM_HEIGHT + ITEM_GAP)).max(1);
+        let visible_rows = rows.min(maximum_rows);
+        let selected_index = grid
+            .items()
+            .iter()
+            .position(SwitcherItem::is_selected)
+            .and_then(|index| u32::try_from(index).ok())
+            .unwrap_or(0);
+        let selected_row = selected_index / columns;
+        let first_visible_row = selected_row.saturating_add(1).saturating_sub(visible_rows);
+        let first_visible_item = first_visible_row * columns;
+        let last_visible_item = first_visible_item + visible_rows * columns;
         let logical_width =
-            2 * GRID_PADDING + columns * CARD_WIDTH + columns.saturating_sub(1) * CARD_GAP;
-        let logical_height =
-            2 * GRID_PADDING + rows * CARD_HEIGHT + rows.saturating_sub(1) * CARD_GAP;
+            2 * GRID_PADDING + columns * ITEM_WIDTH + columns.saturating_sub(1) * ITEM_GAP;
+        let logical_height = 2 * GRID_PADDING
+            + visible_rows * ITEM_HEIGHT
+            + visible_rows.saturating_sub(1) * ITEM_GAP;
         let physical_width = logical_width
             .checked_mul(physical_scale)
             .context("Switcher Grid width overflow")?;
@@ -68,12 +94,16 @@ impl OverlayRenderer {
             Color::rgba(24, 27, 36, 246),
         );
 
-        for (index, card) in grid.cards().iter().enumerate() {
-            self.draw_card(
+        for (index, item) in grid.items().iter().enumerate() {
+            let index = u32::try_from(index).context("too many Switcher Items")?;
+            if !(first_visible_item..last_visible_item).contains(&index) {
+                continue;
+            }
+            self.draw_item(
                 &mut pixels,
-                (physical_width, physical_height),
-                card,
-                u32::try_from(index).context("too many Switcher Items")?,
+                physical_width,
+                item,
+                index - first_visible_item,
                 columns,
                 (physical_scale, font_scale),
             );
@@ -84,46 +114,47 @@ impl OverlayRenderer {
             bytes.extend_from_slice(&pixel.to_ne_bytes());
         }
         Ok(RenderedOverlay {
-            logical_width,
-            logical_height,
-            scale,
+            dimensions: OverlayDimensions {
+                logical_width,
+                logical_height,
+                scale,
+            },
             pixels: bytes,
         })
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_card(
+    fn draw_item(
         &mut self,
         pixels: &mut [u32],
-        surface_size: (u32, u32),
-        card: &SwitcherCard,
+        surface_width: u32,
+        item: &SwitcherItem,
         index: u32,
         columns: u32,
         scale: (u32, f32),
     ) {
-        let (surface_width, surface_height) = surface_size;
         let (physical_scale, font_scale) = scale;
         let column = index % columns;
         let row = index / columns;
-        let x = (GRID_PADDING + column * (CARD_WIDTH + CARD_GAP)) * physical_scale;
-        let y = (GRID_PADDING + row * (CARD_HEIGHT + CARD_GAP)) * physical_scale;
-        let card_rect = Rect::new(
+        let x = (GRID_PADDING + column * (ITEM_WIDTH + ITEM_GAP)) * physical_scale;
+        let y = (GRID_PADDING + row * (ITEM_HEIGHT + ITEM_GAP)) * physical_scale;
+        let item_rect = Rect::new(
             x,
             y,
-            CARD_WIDTH * physical_scale,
-            CARD_HEIGHT * physical_scale,
+            ITEM_WIDTH * physical_scale,
+            ITEM_HEIGHT * physical_scale,
         );
-        let card_color = if card.is_selected() {
+        let item_color = if item.is_selected() {
             Color::rgb(38, 92, 150)
         } else {
             Color::rgb(45, 49, 62)
         };
-        fill_rect(pixels, surface_width, card_rect, card_color);
-        if card.is_selected() {
+        fill_rect(pixels, surface_width, item_rect, item_color);
+        if item.is_selected() {
             stroke_rect(
                 pixels,
                 surface_width,
-                card_rect,
+                item_rect,
                 3 * physical_scale,
                 Color::rgb(124, 189, 255),
             );
@@ -135,31 +166,41 @@ impl OverlayRenderer {
             ICON_SIZE * physical_scale,
             ICON_SIZE * physical_scale,
         );
-        fill_rect(
-            pixels,
-            surface_width,
-            icon_rect,
-            application_color(card.application_id()),
-        );
-        let ApplicationIcon::Monogram(monogram) = card.application_icon();
+        let icon_drawn = self
+            .icons
+            .resolve(item.application_icon(), ICON_SIZE * physical_scale)
+            .is_some_and(|icon| {
+                draw_icon(pixels, surface_width, icon_rect, icon);
+                true
+            });
+        if !icon_drawn {
+            fill_rect(
+                pixels,
+                surface_width,
+                icon_rect,
+                application_color(item.application_id()),
+            );
+            self.draw_text(
+                pixels,
+                surface_width,
+                &item.application_icon().fallback_monogram().to_string(),
+                icon_rect.x + 18 * physical_scale,
+                icon_rect.y + 11 * physical_scale,
+                28 * physical_scale,
+                32 * physical_scale,
+                24.0 * font_scale,
+                28.0 * font_scale,
+                Color::rgb(255, 255, 255),
+            );
+        }
         self.draw_text(
             pixels,
             surface_width,
-            surface_height,
-            &monogram.to_string(),
-            icon_rect.x + 18 * physical_scale,
-            icon_rect.y + 11 * physical_scale,
-            24.0 * font_scale,
-            28.0 * font_scale,
-            Color::rgb(255, 255, 255),
-        );
-        self.draw_text(
-            pixels,
-            surface_width,
-            surface_height,
-            card.title(),
+            item.title(),
             x + 84 * physical_scale,
             y + 26 * physical_scale,
+            (ITEM_WIDTH - 100) * physical_scale,
+            66 * physical_scale,
             16.0 * font_scale,
             22.0 * font_scale,
             Color::rgb(250, 251, 255),
@@ -171,18 +212,19 @@ impl OverlayRenderer {
         &mut self,
         pixels: &mut [u32],
         surface_width: u32,
-        surface_height: u32,
         text: &str,
         x: u32,
         y: u32,
+        text_width: u32,
+        text_height: u32,
         font_size: f32,
         line_height: f32,
         color: Color,
     ) {
         let mut buffer = Buffer::new(&mut self.font_system, Metrics::new(font_size, line_height));
         let mut buffer = buffer.borrow_with(&mut self.font_system);
-        let available_width = u16::try_from(surface_width.saturating_sub(x)).unwrap_or(u16::MAX);
-        let available_height = u16::try_from(surface_height.saturating_sub(y)).unwrap_or(u16::MAX);
+        let available_width = u16::try_from(text_width).unwrap_or(u16::MAX);
+        let available_height = u16::try_from(text_height).unwrap_or(u16::MAX);
         buffer.set_size(
             Some(f32::from(available_width)),
             Some(f32::from(available_height)),
@@ -206,12 +248,12 @@ impl OverlayRenderer {
                 else {
                     return;
                 };
-                blend_rect(
-                    pixels,
-                    surface_width,
-                    Rect::new(glyph_x, glyph_y, width, height),
-                    color,
-                );
+                let Some(glyph_rect) = Rect::new(glyph_x, glyph_y, width, height)
+                    .intersection(Rect::new(x, y, text_width, text_height))
+                else {
+                    return;
+                };
+                blend_rect(pixels, surface_width, glyph_rect, color);
             },
         );
     }
@@ -233,6 +275,20 @@ impl Rect {
             width,
             height,
         }
+    }
+
+    fn intersection(self, other: Self) -> Option<Self> {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = self
+            .x
+            .saturating_add(self.width)
+            .min(other.x.saturating_add(other.width));
+        let bottom = self
+            .y
+            .saturating_add(self.height)
+            .min(other.y.saturating_add(other.height));
+        (right > x && bottom > y).then(|| Self::new(x, y, right - x, bottom - y))
     }
 }
 
@@ -310,6 +366,9 @@ fn blend_rect(pixels: &mut [u32], surface_width: u32, rect: Rect, source: Color)
 }
 
 fn pixel_mut(pixels: &mut [u32], surface_width: u32, x: u32, y: u32) -> Option<&mut u32> {
+    if x >= surface_width {
+        return None;
+    }
     let index = y.checked_mul(surface_width)?.checked_add(x)?;
     pixels.get_mut(usize::try_from(index).ok()?)
 }
@@ -323,4 +382,128 @@ fn application_color(application_id: &str) -> Color {
         72 + ((hash >> 8) & 0x7F) as u8,
         72 + (hash & 0x7F) as u8,
     )
+}
+
+#[derive(Clone)]
+struct IconImage {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+#[derive(Default)]
+struct IconResolver {
+    cache: HashMap<(String, u32), Option<IconImage>>,
+}
+
+impl IconResolver {
+    fn resolve(&mut self, icon: &ApplicationIcon, target_size: u32) -> Option<&IconImage> {
+        let key = (icon.name().to_owned(), target_size);
+        self.cache
+            .entry(key)
+            .or_insert_with(|| load_icon(icon.name(), target_size))
+            .as_ref()
+    }
+}
+
+fn load_icon(name: &str, target_size: u32) -> Option<IconImage> {
+    if name.trim().is_empty() {
+        return None;
+    }
+    let size = u16::try_from(target_size).unwrap_or(u16::MAX);
+    let path = freedesktop_icons::lookup(name)
+        .with_size(size)
+        .with_cache()
+        .find()
+        .or_else(|| {
+            let lowercase = name.to_lowercase();
+            freedesktop_icons::lookup(&lowercase)
+                .with_size(size)
+                .with_cache()
+                .find()
+        })?;
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if extension.eq_ignore_ascii_case("svg") => {
+            load_svg_icon(&path, target_size)
+        }
+        _ => load_raster_icon(&path, target_size),
+    }
+}
+
+fn load_raster_icon(path: &Path, target_size: u32) -> Option<IconImage> {
+    let image = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()?
+        .resize(target_size, target_size, FilterType::Lanczos3)
+        .into_rgba8();
+    Some(IconImage {
+        width: image.width(),
+        height: image.height(),
+        pixels: image.into_raw(),
+    })
+}
+
+fn load_svg_icon(path: &Path, target_size: u32) -> Option<IconImage> {
+    let data = std::fs::read(path).ok()?;
+    let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).ok()?;
+    let size = tree.size();
+    let target_size_f32 = f32::from(u16::try_from(target_size).ok()?);
+    let scale = (target_size_f32 / size.width()).min(target_size_f32 / size.height());
+    let rendered_width = size.width() * scale;
+    let rendered_height = size.height() * scale;
+    let transform = resvg::tiny_skia::Transform::from_row(
+        scale,
+        0.0,
+        0.0,
+        scale,
+        (target_size_f32 - rendered_width) / 2.0,
+        (target_size_f32 - rendered_height) / 2.0,
+    );
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(target_size, target_size)?;
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    let mut pixels = pixmap.take();
+    for pixel in pixels.chunks_exact_mut(4) {
+        let alpha = pixel[3];
+        if alpha == 0 {
+            continue;
+        }
+        for channel in &mut pixel[..3] {
+            *channel = u8::try_from((u16::from(*channel) * u16::from(u8::MAX)) / u16::from(alpha))
+                .unwrap_or(u8::MAX);
+        }
+    }
+    Some(IconImage {
+        width: target_size,
+        height: target_size,
+        pixels,
+    })
+}
+
+fn draw_icon(pixels: &mut [u32], surface_width: u32, bounds: Rect, icon: &IconImage) {
+    let offset_x = bounds.x + bounds.width.saturating_sub(icon.width) / 2;
+    let offset_y = bounds.y + bounds.height.saturating_sub(icon.height) / 2;
+    for icon_y in 0..icon.height {
+        for icon_x in 0..icon.width {
+            let Some(index) = icon_y
+                .checked_mul(icon.width)
+                .and_then(|index| index.checked_add(icon_x))
+                .and_then(|index| index.checked_mul(4))
+                .and_then(|index| usize::try_from(index).ok())
+            else {
+                continue;
+            };
+            let Some(rgba) = icon.pixels.get(index..index + 4) else {
+                continue;
+            };
+            blend_rect(
+                pixels,
+                surface_width,
+                Rect::new(offset_x + icon_x, offset_y + icon_y, 1, 1),
+                Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3]),
+            );
+        }
+    }
 }

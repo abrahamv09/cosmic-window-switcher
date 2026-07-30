@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use cosmic_window_switcher::{
-    ApplicationIcon, SessionDisplay, SwitcherCard, SwitcherGrid, WindowId,
-};
+use cosmic_window_switcher::{SessionDisplay, SwitcherGrid, SwitcherItem, WindowId};
 
-fn card(id: &str, application_id: &str, title: &str) -> SwitcherCard {
-    SwitcherCard::new(
+fn item(id: &str, application_id: &str, title: &str) -> SwitcherItem {
+    SwitcherItem::new(
         WindowId::from(id),
         application_id.to_owned(),
         title.to_owned(),
@@ -13,39 +11,40 @@ fn card(id: &str, application_id: &str, title: &str) -> SwitcherCard {
 }
 
 #[test]
-fn grid_exposes_icon_title_and_accessible_selected_state_for_every_card() {
+fn grid_exposes_icon_title_and_accessible_selected_state_for_every_item() {
     let grid = SwitcherGrid::new(
         SessionDisplay::from("eDP-1"),
         [
-            card("focused", "com.example.Editor", "Notes"),
-            card("selected", "com.example.Terminal", "Build"),
+            item("focused", "com.example.Editor", "Notes"),
+            item("selected", "com.example.Terminal", "Build"),
         ],
         &WindowId::from("selected"),
     )
     .expect("the selected Window belongs to the grid");
 
     assert_eq!(grid.session_display(), &SessionDisplay::from("eDP-1"));
-    assert_eq!(grid.cards()[0].title(), "Notes");
+    assert_eq!(grid.items()[0].title(), "Notes");
     assert_eq!(
-        grid.cards()[0].application_icon(),
-        &ApplicationIcon::Monogram('E')
+        grid.items()[0].application_icon().name(),
+        "com.example.Editor"
     );
-    assert_eq!(grid.cards()[0].accessible_name(), "Notes");
-    assert_eq!(grid.cards()[0].accessible_position(), (1, 2));
-    assert!(!grid.cards()[0].is_selected());
-    assert_eq!(grid.cards()[1].accessible_name(), "Build");
-    assert_eq!(grid.cards()[1].accessible_position(), (2, 2));
-    assert!(grid.cards()[1].is_selected());
+    assert_eq!(grid.items()[0].application_icon().fallback_monogram(), 'E');
+    assert_eq!(grid.items()[0].accessible_name(), "Notes");
+    assert_eq!(grid.items()[0].accessible_position(), (1, 2));
+    assert!(!grid.items()[0].is_selected());
+    assert_eq!(grid.items()[1].accessible_name(), "Build");
+    assert_eq!(grid.items()[1].accessible_position(), (2, 2));
+    assert!(grid.items()[1].is_selected());
 }
 
 #[test]
-fn changing_selection_updates_one_accessible_selected_state_without_reordering_cards() {
+fn changing_selection_updates_one_accessible_selected_state_without_reordering_items() {
     let mut grid = SwitcherGrid::new(
         SessionDisplay::from("HDMI-A-1"),
         [
-            card("focused", "com.example.Editor", "Notes"),
-            card("previous", "com.example.Terminal", "Build"),
-            card("least-recent", "com.example.Browser", "Reference"),
+            item("focused", "com.example.Editor", "Notes"),
+            item("previous", "com.example.Terminal", "Build"),
+            item("least-recent", "com.example.Browser", "Reference"),
         ],
         &WindowId::from("previous"),
     )
@@ -55,16 +54,16 @@ fn changing_selection_updates_one_accessible_selected_state_without_reordering_c
         .expect("the selected Window belongs to the grid");
 
     assert_eq!(
-        grid.cards()
+        grid.items()
             .iter()
-            .map(|card| card.window().as_str())
+            .map(|item| item.window().as_str())
             .collect::<Vec<_>>(),
         ["focused", "previous", "least-recent"]
     );
     assert_eq!(
-        grid.cards()
+        grid.items()
             .iter()
-            .map(SwitcherCard::is_selected)
+            .map(SwitcherItem::is_selected)
             .collect::<Vec<_>>(),
         [false, false, true]
     );
@@ -74,27 +73,28 @@ fn changing_selection_updates_one_accessible_selected_state_without_reordering_c
 fn blank_titles_use_the_application_identity_as_the_accessible_fallback() {
     let grid = SwitcherGrid::new(
         SessionDisplay::from("eDP-1"),
-        [card("window", "org.example.Files", "")],
+        [item("window", "org.example.Files", "")],
         &WindowId::from("window"),
     )
     .expect("the selected Window belongs to the grid");
 
-    assert_eq!(grid.cards()[0].title(), "org.example.Files");
-    assert_eq!(grid.cards()[0].accessible_name(), "org.example.Files");
+    assert_eq!(grid.items()[0].title(), "org.example.Files");
+    assert_eq!(grid.items()[0].accessible_name(), "org.example.Files");
     assert_eq!(
-        grid.cards()[0].application_icon(),
-        &ApplicationIcon::Monogram('F')
+        grid.items()[0].application_icon().name(),
+        "org.example.Files"
     );
+    assert_eq!(grid.items()[0].application_icon().fallback_monogram(), 'F');
 }
 
 #[test]
-fn closing_a_card_removes_it_without_reordering_survivors() {
+fn closing_an_item_removes_it_without_reordering_survivors() {
     let mut grid = SwitcherGrid::new(
         SessionDisplay::from("eDP-1"),
         [
-            card("focused", "com.example.Editor", "Notes"),
-            card("selected", "com.example.Terminal", "Build"),
-            card("survivor", "com.example.Browser", "Reference"),
+            item("focused", "com.example.Editor", "Notes"),
+            item("selected", "com.example.Terminal", "Build"),
+            item("survivor", "com.example.Browser", "Reference"),
         ],
         &WindowId::from("selected"),
     )
@@ -105,11 +105,11 @@ fn closing_a_card_removes_it_without_reordering_survivors() {
         .expect("the selected Window belongs to the grid");
 
     assert_eq!(
-        grid.cards()
+        grid.items()
             .iter()
-            .map(|card| (card.window().as_str(), card.accessible_position()))
+            .map(|item| (item.window().as_str(), item.accessible_position()))
             .collect::<Vec<_>>(),
         [("focused", (1, 2)), ("survivor", (2, 2))]
     );
-    assert!(grid.cards()[1].is_selected());
+    assert!(grid.items()[1].is_selected());
 }

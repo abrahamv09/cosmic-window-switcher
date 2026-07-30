@@ -42,13 +42,15 @@ use wayland_protocols::ext::foreign_toplevel_list::v1::client::{
 
 use cosmic_window_switcher::{
     APPLICATION_ID, HoldModifiers, InvocationDirection, InvocationRequest, ServiceEffect,
-    ServiceEvent, SessionDisplay, SwitcherCard, SwitcherGrid, SwitchingEvent, WindowEvent,
+    ServiceEvent, SessionDisplay, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent,
     WindowId,
 };
 
 use super::{
-    PendingInvocations, SharedService, invocation,
-    overlay::{OverlayRenderer, RenderedOverlay},
+    PendingInvocations, SharedService,
+    accessibility::AccessibilityBridge,
+    invocation,
+    overlay::{OverlayDimensions, OverlayRenderer, RenderedOverlay},
 };
 
 const REVEAL_DELAY: Duration = Duration::from_millis(100);
@@ -109,13 +111,14 @@ impl WindowObserver {
             next_observation_key: 0,
             service,
             management_can_activate: false,
+            accessibility: AccessibilityBridge::new(),
             overlay_renderer: OverlayRenderer::new(),
             layer: None,
-            overlay_pool: None,
-            overlay_buffer: None,
-            visible_pool: None,
-            visible_buffer: None,
-            visible_dimensions: None,
+            readiness_pool: None,
+            readiness_buffer: None,
+            grid_pool: None,
+            grid_buffer: None,
+            grid_dimensions: None,
             grid: None,
             session_window_order: Vec::new(),
             session_output: None,
@@ -234,13 +237,14 @@ struct ProtocolObserver {
     next_observation_key: u64,
     service: SharedService,
     management_can_activate: bool,
+    accessibility: AccessibilityBridge,
     overlay_renderer: OverlayRenderer,
     layer: Option<LayerSurface>,
-    overlay_pool: Option<RawPool>,
-    overlay_buffer: Option<wl_buffer::WlBuffer>,
-    visible_pool: Option<RawPool>,
-    visible_buffer: Option<wl_buffer::WlBuffer>,
-    visible_dimensions: Option<(u32, u32, i32)>,
+    readiness_pool: Option<RawPool>,
+    readiness_buffer: Option<wl_buffer::WlBuffer>,
+    grid_pool: Option<RawPool>,
+    grid_buffer: Option<wl_buffer::WlBuffer>,
+    grid_dimensions: Option<OverlayDimensions>,
     grid: Option<SwitcherGrid>,
     session_window_order: Vec<WindowId>,
     session_output: Option<wl_output::WlOutput>,
@@ -260,6 +264,9 @@ impl ProtocolObserver {
             _ => None,
         };
         let window_events = self.observations.apply(event);
+        if let Some(closed) = closed.as_ref() {
+            self.session_window_order.retain(|window| window != closed);
+        }
         let grid_changed = closed
             .as_ref()
             .is_some_and(|closed| self.grid.as_mut().is_some_and(|grid| grid.remove(closed)));
@@ -277,13 +284,11 @@ impl ProtocolObserver {
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         drop(service);
-        if grid_changed
-            && self.grid.is_some()
-            && let Err(error) = self.render_grid()
-        {
-            eprintln!("render Switcher Grid after Window closure failed: {error:#}");
-            if let Some(direction) = self.pending_direction {
-                self.fallback(direction);
+        if grid_changed && self.grid.is_some() {
+            self.accessibility
+                .update(self.grid.as_ref().expect("the Switcher Grid is present"));
+            if let Err(error) = self.render_grid() {
+                self.fail_overlay("render Switcher Grid after Window closure failed", &error);
             }
         }
     }
@@ -363,8 +368,8 @@ impl ProtocolObserver {
 
     fn try_mark_ready(&mut self) {
         if !self.interaction.keyboard_focused
-            || self.visible_pool.is_none()
-            || self.visible_buffer.is_none()
+            || self.grid_pool.is_none()
+            || self.grid_buffer.is_none()
             || self.initial_hold_modifiers.is_none()
         {
             return;
@@ -436,18 +441,12 @@ impl ProtocolObserver {
             match effect {
                 ServiceEffect::PrepareInvisibleOverlay { selected } => {
                     if let Err(error) = self.prepare_grid(&selected) {
-                        eprintln!("prepare Switcher Grid failed: {error:#}");
-                        if let Some(direction) = self.pending_direction {
-                            self.fallback(direction);
-                        }
+                        self.fail_overlay("prepare Switcher Grid failed", &error);
                     }
                 }
                 ServiceEffect::SelectionChanged(selected) => {
                     if let Err(error) = self.select_grid(&selected) {
-                        eprintln!("render Switcher Grid selection failed: {error:#}");
-                        if let Some(direction) = self.pending_direction {
-                            self.fallback(direction);
-                        }
+                        self.fail_overlay("render Switcher Grid selection failed", &error);
                     }
                 }
                 ServiceEffect::RevealOverlay { selected } => {
@@ -455,10 +454,7 @@ impl ProtocolObserver {
                         let _selection = grid.select(&selected);
                     }
                     if let Err(error) = self.show_grid() {
-                        eprintln!("reveal Switcher Grid failed: {error:#}");
-                        if let Some(direction) = self.pending_direction {
-                            self.fallback(direction);
-                        }
+                        self.fail_overlay("reveal Switcher Grid failed", &error);
                     }
                 }
                 ServiceEffect::Activate(window) => {
@@ -487,21 +483,29 @@ impl ProtocolObserver {
         }
     }
 
+    fn fail_overlay(&mut self, context: &str, error: &anyhow::Error) {
+        eprintln!("{context}: {error:#}");
+        if let Some(direction) = self.pending_direction {
+            self.fallback(direction);
+        }
+    }
+
     fn destroy_overlay(&mut self) {
         if let Some(layer) = self.layer.take() {
             layer.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer.commit();
         }
-        if let Some(buffer) = self.visible_buffer.take() {
+        if let Some(buffer) = self.grid_buffer.take() {
             buffer.destroy();
         }
-        if let Some(buffer) = self.overlay_buffer.take() {
+        if let Some(buffer) = self.readiness_buffer.take() {
             buffer.destroy();
         }
-        self.overlay_pool = None;
-        self.visible_pool = None;
-        self.visible_dimensions = None;
+        self.readiness_pool = None;
+        self.grid_pool = None;
+        self.grid_dimensions = None;
         self.grid = None;
+        self.accessibility.hide();
         self.session_window_order.clear();
         self.session_output = None;
         self.interaction = InteractionState::default();
@@ -531,12 +535,12 @@ impl ProtocolObserver {
                 .name
                 .unwrap_or_else(|| format!("output-{}", output_info.id)),
         );
-        let cards = self
+        let items = self
             .session_window_order
             .iter()
             .map(|id| {
                 self.observed_window(id).map(|window| {
-                    SwitcherCard::new(
+                    SwitcherItem::new(
                         id.clone(),
                         window.application_id.clone(),
                         window.title.clone(),
@@ -546,9 +550,11 @@ impl ProtocolObserver {
             .collect::<Option<Vec<_>>>()
             .context("a Session Window is missing icon-and-title metadata")?;
         self.grid = Some(
-            SwitcherGrid::new(session_display, cards, selected)
+            SwitcherGrid::new(session_display, items, selected)
                 .context("the Initial Selection is absent from the Switcher Grid")?,
         );
+        self.accessibility
+            .update(self.grid.as_ref().expect("the Switcher Grid is present"));
         self.render_grid()
     }
 
@@ -558,6 +564,8 @@ impl ProtocolObserver {
             .context("the Switching Session has no Switcher Grid")?
             .select(selected)
             .context("the selected Window is absent from the Switcher Grid")?;
+        self.accessibility
+            .update(self.grid.as_ref().expect("the Switcher Grid is present"));
         self.render_grid()
     }
 
@@ -574,31 +582,33 @@ impl ProtocolObserver {
             .logical_size
             .and_then(|(width, _)| u32::try_from(width).ok())
             .map_or(1_200, |width| width.saturating_mul(4) / 5);
+        let maximum_height = output_info
+            .logical_size
+            .and_then(|(_, height)| u32::try_from(height).ok())
+            .map_or(800, |height| height.saturating_mul(4) / 5);
         let rendered = self.overlay_renderer.render(
             self.grid
                 .as_ref()
                 .context("the Switching Session has no Switcher Grid")?,
             maximum_width,
+            maximum_height,
             output_info.scale_factor,
         )?;
         self.install_rendered_grid(rendered)
     }
 
     fn install_rendered_grid(&mut self, rendered: RenderedOverlay) -> Result<()> {
-        let RenderedOverlay {
-            logical_width,
-            logical_height,
-            scale,
-            pixels,
-        } = rendered;
+        let RenderedOverlay { dimensions, pixels } = rendered;
         let mut pool = RawPool::new(pixels.len(), &self.shm)
             .context("allocate shared memory for the Switcher Grid")?;
         pool.mmap().copy_from_slice(&pixels);
-        let scale_u32 = u32::try_from(scale).context("invalid output scale")?;
-        let physical_width = logical_width
+        let scale_u32 = u32::try_from(dimensions.scale).context("invalid output scale")?;
+        let physical_width = dimensions
+            .logical_width
             .checked_mul(scale_u32)
             .context("Switcher Grid width overflow")?;
-        let physical_height = logical_height
+        let physical_height = dimensions
+            .logical_height
             .checked_mul(scale_u32)
             .context("Switcher Grid height overflow")?;
         let stride = physical_width
@@ -613,13 +623,13 @@ impl ProtocolObserver {
             (),
             &self.queue_handle,
         );
-        if let Some(previous) = self.visible_buffer.replace(buffer) {
+        if let Some(previous) = self.grid_buffer.replace(buffer) {
             previous.destroy();
         }
-        self.visible_pool = Some(pool);
-        self.visible_dimensions = Some((logical_width, logical_height, scale));
+        self.grid_pool = Some(pool);
+        self.grid_dimensions = Some(dimensions);
         if self.interaction.visible {
-            self.attach_visible_buffer()?;
+            self.attach_grid_buffer()?;
         }
         self.try_mark_ready();
         Ok(())
@@ -627,36 +637,38 @@ impl ProtocolObserver {
 
     fn show_grid(&mut self) -> Result<()> {
         self.interaction.visible = true;
-        self.attach_visible_buffer()
+        self.attach_grid_buffer()
     }
 
-    fn attach_visible_buffer(&self) -> Result<()> {
+    fn attach_grid_buffer(&self) -> Result<()> {
         let layer = self
             .layer
             .as_ref()
             .context("the Switching Session has no layer surface")?;
         let buffer = self
-            .visible_buffer
+            .grid_buffer
             .as_ref()
             .context("the Switcher Grid has no rendered buffer")?;
-        let (logical_width, logical_height, scale) = self
-            .visible_dimensions
+        let dimensions = self
+            .grid_dimensions
             .context("the Switcher Grid has no rendered dimensions")?;
-        let scale_u32 = u32::try_from(scale).context("invalid output scale")?;
-        layer.set_size(logical_width, logical_height);
-        layer.wl_surface().set_buffer_scale(scale);
+        let scale_u32 = u32::try_from(dimensions.scale).context("invalid output scale")?;
+        layer.set_size(dimensions.logical_width, dimensions.logical_height);
+        layer.wl_surface().set_buffer_scale(dimensions.scale);
         layer.wl_surface().attach(Some(buffer), 0, 0);
         layer.wl_surface().damage_buffer(
             0,
             0,
             i32::try_from(
-                logical_width
+                dimensions
+                    .logical_width
                     .checked_mul(scale_u32)
                     .context("Switcher Grid width overflow")?,
             )
             .context("Switcher Grid is too wide")?,
             i32::try_from(
-                logical_height
+                dimensions
+                    .logical_height
                     .checked_mul(scale_u32)
                     .context("Switcher Grid height overflow")?,
             )
@@ -766,7 +778,7 @@ impl LayerShellHandler for ProtocolObserver {
         _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        if self.overlay_pool.is_some() || self.layer.as_ref() != Some(layer) {
+        if self.readiness_pool.is_some() || self.layer.as_ref() != Some(layer) {
             return;
         }
 
@@ -778,8 +790,8 @@ impl LayerShellHandler for ProtocolObserver {
                 layer.wl_surface().attach(Some(&buffer), 0, 0);
                 layer.wl_surface().damage_buffer(0, 0, 1, 1);
                 layer.commit();
-                self.overlay_buffer = Some(buffer);
-                self.overlay_pool = Some(pool);
+                self.readiness_buffer = Some(buffer);
+                self.readiness_pool = Some(pool);
                 self.try_mark_ready();
             }
             Err(_) => {
@@ -881,10 +893,13 @@ impl KeyboardHandler for ProtocolObserver {
             .service
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .invoke(InvocationRequest {
-                direction,
-                initial_hold_modifiers: modifiers,
-            });
+            .invoke_for_window_set(
+                InvocationRequest {
+                    direction,
+                    initial_hold_modifiers: modifiers,
+                },
+                self.session_window_order.clone(),
+            );
         self.apply_effects(effects);
         self.try_mark_ready();
     }

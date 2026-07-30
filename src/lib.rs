@@ -274,12 +274,25 @@ impl fmt::Display for SessionDisplay {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ApplicationIcon {
-    Monogram(char),
+pub struct ApplicationIcon {
+    name: String,
+    fallback_monogram: char,
+}
+
+impl ApplicationIcon {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[must_use]
+    pub const fn fallback_monogram(&self) -> char {
+        self.fallback_monogram
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SwitcherCard {
+pub struct SwitcherItem {
     window: WindowId,
     application_id: String,
     title: String,
@@ -289,7 +302,7 @@ pub struct SwitcherCard {
     set_size: usize,
 }
 
-impl SwitcherCard {
+impl SwitcherItem {
     #[must_use]
     pub fn new(window: WindowId, application_id: String, title: String) -> Self {
         let title = if title.trim().is_empty() {
@@ -306,12 +319,16 @@ impl SwitcherCard {
             .find_map(|part| part.chars().find(char::is_ascii_alphanumeric))
             .unwrap_or('?')
             .to_ascii_uppercase();
+        let application_icon = ApplicationIcon {
+            name: application_id.clone(),
+            fallback_monogram: monogram,
+        };
 
         Self {
             window,
             application_id,
             title,
-            application_icon: ApplicationIcon::Monogram(monogram),
+            application_icon,
             selected: false,
             position: 0,
             set_size: 0,
@@ -372,26 +389,26 @@ impl Error for UnknownGridSelection {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SwitcherGrid {
     session_display: SessionDisplay,
-    cards: Vec<SwitcherCard>,
+    items: Vec<SwitcherItem>,
 }
 
 impl SwitcherGrid {
-    /// Builds the stable card order for one Switching Session.
+    /// Builds the stable item order for one Switching Session.
     ///
     /// # Errors
     ///
     /// Returns [`UnknownGridSelection`] when `selected` is not represented by
-    /// one of the supplied cards.
+    /// one of the supplied items.
     pub fn new(
         session_display: SessionDisplay,
-        cards: impl IntoIterator<Item = SwitcherCard>,
+        items: impl IntoIterator<Item = SwitcherItem>,
         selected: &WindowId,
     ) -> Result<Self, UnknownGridSelection> {
-        let mut cards = cards.into_iter().collect::<Vec<_>>();
-        update_accessible_positions(&mut cards);
+        let mut items = items.into_iter().collect::<Vec<_>>();
+        update_accessible_positions(&mut items);
         let mut grid = Self {
             session_display,
-            cards,
+            items,
         };
         grid.select(selected)?;
         Ok(grid)
@@ -403,41 +420,41 @@ impl SwitcherGrid {
     }
 
     #[must_use]
-    pub fn cards(&self) -> &[SwitcherCard] {
-        &self.cards
+    pub fn items(&self) -> &[SwitcherItem] {
+        &self.items
     }
 
-    /// Changes the selected card without changing MRU Order.
+    /// Changes the selected item without changing MRU Order.
     ///
     /// # Errors
     ///
     /// Returns [`UnknownGridSelection`] when `selected` is not represented in
     /// this Switching Session.
     pub fn select(&mut self, selected: &WindowId) -> Result<(), UnknownGridSelection> {
-        if !self.cards.iter().any(|card| card.window == *selected) {
+        if !self.items.iter().any(|item| item.window == *selected) {
             return Err(UnknownGridSelection(selected.clone()));
         }
-        for card in &mut self.cards {
-            card.selected = card.window == *selected;
+        for item in &mut self.items {
+            item.selected = item.window == *selected;
         }
         Ok(())
     }
 
     pub fn remove(&mut self, window: &WindowId) -> bool {
-        let Some(index) = self.cards.iter().position(|card| card.window == *window) else {
+        let Some(index) = self.items.iter().position(|item| item.window == *window) else {
             return false;
         };
-        self.cards.remove(index);
-        update_accessible_positions(&mut self.cards);
+        self.items.remove(index);
+        update_accessible_positions(&mut self.items);
         true
     }
 }
 
-fn update_accessible_positions(cards: &mut [SwitcherCard]) {
-    let set_size = cards.len();
-    for (index, card) in cards.iter_mut().enumerate() {
-        card.position = index + 1;
-        card.set_size = set_size;
+fn update_accessible_positions(items: &mut [SwitcherItem]) {
+    let set_size = items.len();
+    for (index, item) in items.iter_mut().enumerate() {
+        item.position = index + 1;
+        item.set_size = set_size;
     }
 }
 
@@ -813,11 +830,21 @@ impl SwitcherService {
             .iter()
             .map(|window| window.id.clone())
             .collect::<Vec<_>>();
-        let Ok(session) = SwitchingSession::new(
-            windows.clone(),
-            request.direction,
-            request.initial_hold_modifiers,
-        ) else {
+        self.invoke_for_window_set(request, windows)
+    }
+
+    /// Starts switching from a Session Window Set captured with the Invocation Request.
+    ///
+    /// The caller owns the atomic snapshot boundary. Later Window discovery and
+    /// MRU changes cannot enter the resulting Switching Session.
+    pub fn invoke_for_window_set(
+        &mut self,
+        request: InvocationRequest,
+        windows: impl IntoIterator<Item = WindowId>,
+    ) -> Vec<ServiceEffect> {
+        let Ok(session) =
+            SwitchingSession::new(windows, request.direction, request.initial_hold_modifiers)
+        else {
             return Vec::new();
         };
         let selected = session.selected().clone();

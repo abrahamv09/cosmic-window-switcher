@@ -96,13 +96,16 @@ modifier activates the selection. An invocation without a hold modifier uses
 Latch Mode, where Enter activates and Escape cancels. A single Eligible Window
 is a no-op.
 
-If the reveal delay expires, the service reveals a centered card grid in stable
-MRU Order. Each card has an application-identity icon fallback, its Window
-title, and a high-contrast selected state. `Tab` moves forward,
-`Shift+Tab` moves backward, and both directions wrap. The grid remains above
-fullscreen content without changing the selected Window's fullscreen state.
-Closed Windows disappear without reordering survivors, while Windows opened
-during switching wait for the next Switching Session.
+If the reveal delay expires, the service reveals a centered item grid in stable
+MRU Order. Each Switcher Item uses its installed application icon when
+available, an application-identity monogram fallback otherwise, its Window
+title, and a high-contrast selected state. The same names, positions, focus,
+and selected state are exposed to assistive technology through AT-SPI. `Tab`
+moves forward, `Shift+Tab` moves backward, and both directions wrap. The grid
+remains above fullscreen content without changing the selected Window's
+fullscreen state. Closed Windows disappear without reordering survivors, while
+Windows opened during switching wait for the next Switching Session. When all
+rows do not fit, rendering follows the selected row so it remains visible.
 
 If the grid cannot be rendered or targeted to the Session Display before
 Session Readiness times out, the resident service delegates that invocation to

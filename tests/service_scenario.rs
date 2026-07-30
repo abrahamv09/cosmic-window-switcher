@@ -206,3 +206,28 @@ fn windows_discovered_during_switching_wait_for_the_next_session() {
         vec![ServiceEffect::SelectionChanged(window("least-recent"))]
     );
 }
+
+#[test]
+fn prepared_session_uses_the_window_set_captured_with_the_invocation_request() {
+    let mut service = service_with_mru_order(&["focused", "previous", "least-recent"]);
+    let session_window_set = service.diagnostics().mru_order;
+    service.observe(WindowEvent::Discovered(window("new")));
+    service.observe(WindowEvent::Activated(window("new")));
+
+    assert_eq!(
+        service.invoke_for_window_set(
+            InvocationRequest {
+                direction: InvocationDirection::Next,
+                initial_hold_modifiers: HoldModifiers::ALT,
+            },
+            session_window_set,
+        ),
+        vec![ServiceEffect::PrepareInvisibleOverlay {
+            selected: window("previous"),
+        }]
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::Invocation(InvocationDirection::Previous)),
+        vec![ServiceEffect::SelectionChanged(window("focused"))]
+    );
+}

@@ -13,6 +13,7 @@ use rustix::{
 
 use cosmic_window_switcher::{InvocationDirection, ServiceDiagnostics, SwitcherService};
 
+mod accessibility;
 mod diagnostics;
 mod invocation;
 mod overlay;
