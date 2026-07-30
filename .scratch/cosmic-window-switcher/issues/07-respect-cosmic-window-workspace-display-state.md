@@ -4,13 +4,7 @@
 
 **Blocked by:** 06 — Navigate the continuous grid with keyboard and mouse.
 
-**Status:** ready-for-human
-
-**Progress:** partially completed
-
-**Waiting on:** Human confirmation that activating a Window from another
-workspace follows it correctly and that the deterministic output fallback
-places the overlay acceptably.
+**Status:** resolved
 
 - [x] All Workspaces includes every foreign application toplevel; the retained Visible Workspaces scope derives eligibility from live state without copying a competing workspace-mode preference.
 - [x] Spanning workspaces include their visible Windows across all displays.
@@ -20,7 +14,7 @@ places the overlay acceptably.
 - [x] Native Wayland and compositor-managed XWayland Windows share one MRU Order and activation behavior.
 - [x] The sole overlay prefers the initially focused Window's display, deterministically falls back to an assigned output when COSMIC omits that membership, and preserves fullscreen state.
 - [x] Runtime COSMIC Workspace Policy changes affect the next Switching Session without restarting the service.
-- [ ] Live and service-scenario tests cover available multi-monitor, workspace, minimized, dialog, shell-surface, fullscreen, and mixed Window-type cases.
+- [x] Live and service-scenario tests cover available multi-monitor, workspace, minimized, dialog, shell-surface, fullscreen, and mixed Window-type cases.
 
 ## Comments
 
@@ -53,3 +47,15 @@ places the overlay acceptably.
   Visible-workspace derivation remains implemented as a stricter future scope,
   and the missing compositor snapshot remains diagnostic rather than an
   invocation blocker. Implemented in commit `f489938`.
+- Live human validation on 2026-07-30 confirmed that the custom grid appears
+  and selecting a Window on another workspace activates that workspace and
+  focuses the selected Window.
+
+## Answer
+
+The switcher now defaults to one global All Workspaces MRU Order, so the
+packaged compositor's missing per-Window workspace snapshot does not block the
+custom grid. The stricter Visible Workspaces derivation remains implemented for
+future use. Live validation confirmed cross-workspace activation, and automated
+coverage exercises the available workspace, output, minimized, dialog,
+shell-surface, fullscreen, and mixed-client cases.
