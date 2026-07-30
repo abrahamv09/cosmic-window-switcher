@@ -1159,10 +1159,21 @@ pub enum MruHistoryAccuracy {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum WorkspaceEligibilityDiagnostics {
+pub enum WorkspaceEligibilityState {
     #[default]
     AwaitingSnapshot,
     Ready,
+    MissingToplevelInfo {
+        advertised_version: Option<u32>,
+        required_version: u32,
+    },
+    MissingWorkspaceProtocol {
+        advertised_version: Option<u32>,
+        required_version: u32,
+    },
+    MissingWorkspaceSnapshot {
+        advertised_version: u32,
+    },
     MissingToplevelMembership {
         advertised_version: u32,
     },
@@ -1172,7 +1183,7 @@ pub enum WorkspaceEligibilityDiagnostics {
 pub struct ServiceDiagnostics {
     pub mru_history: MruHistoryAccuracy,
     pub mru_order: Vec<WindowId>,
-    pub workspace_eligibility: WorkspaceEligibilityDiagnostics,
+    pub workspace_eligibility: WorkspaceEligibilityState,
 }
 
 impl fmt::Display for ServiceDiagnostics {
@@ -1187,13 +1198,48 @@ impl fmt::Display for ServiceDiagnostics {
             self.mru_order.len()
         )?;
         match self.workspace_eligibility {
-            WorkspaceEligibilityDiagnostics::AwaitingSnapshot => {
+            WorkspaceEligibilityState::AwaitingSnapshot => {
                 formatter.write_str("\nworkspace_eligibility: awaiting-snapshot")?;
             }
-            WorkspaceEligibilityDiagnostics::Ready => {
+            WorkspaceEligibilityState::Ready => {
                 formatter.write_str("\nworkspace_eligibility: ready")?;
             }
-            WorkspaceEligibilityDiagnostics::MissingToplevelMembership { advertised_version } => {
+            WorkspaceEligibilityState::MissingToplevelInfo {
+                advertised_version,
+                required_version,
+            } => {
+                let advertised_version = advertised_version.map_or_else(
+                    || "not-advertised".to_owned(),
+                    |version| format!("v{version}"),
+                );
+                write!(
+                    formatter,
+                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
+                     zcosmic_toplevel_info_v1 {advertised_version}; v{required_version} required"
+                )?;
+            }
+            WorkspaceEligibilityState::MissingWorkspaceProtocol {
+                advertised_version,
+                required_version,
+            } => {
+                let advertised_version = advertised_version.map_or_else(
+                    || "not-advertised".to_owned(),
+                    |version| format!("v{version}"),
+                );
+                write!(
+                    formatter,
+                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
+                     ext_workspace_manager_v1 {advertised_version}; v{required_version} required"
+                )?;
+            }
+            WorkspaceEligibilityState::MissingWorkspaceSnapshot { advertised_version } => {
+                write!(
+                    formatter,
+                    "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
+                     ext_workspace_manager_v1 v{advertised_version} emitted no committed snapshot"
+                )?;
+            }
+            WorkspaceEligibilityState::MissingToplevelMembership { advertised_version } => {
                 write!(
                     formatter,
                     "\nworkspace_eligibility: unavailable\nworkspace_eligibility_failure: \
@@ -1310,7 +1356,7 @@ pub struct SwitcherService {
     windows: Vec<TrackedWindow>,
     initial_discovery_complete: bool,
     active_session: Option<ActiveSession>,
-    workspace_eligibility: WorkspaceEligibilityDiagnostics,
+    workspace_eligibility: WorkspaceEligibilityState,
 }
 
 impl SwitcherService {
@@ -1320,7 +1366,7 @@ impl SwitcherService {
             windows: Vec::new(),
             initial_discovery_complete: false,
             active_session: None,
-            workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
+            workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
         }
     }
 
@@ -1328,11 +1374,8 @@ impl SwitcherService {
         self.initial_discovery_complete = true;
     }
 
-    pub const fn set_workspace_eligibility_diagnostics(
-        &mut self,
-        diagnostics: WorkspaceEligibilityDiagnostics,
-    ) {
-        self.workspace_eligibility = diagnostics;
+    pub const fn set_workspace_eligibility_state(&mut self, state: WorkspaceEligibilityState) {
+        self.workspace_eligibility = state;
     }
 
     #[must_use]
@@ -1341,9 +1384,12 @@ impl SwitcherService {
         direction: InvocationDirection,
     ) -> Option<ServiceEffect> {
         match self.workspace_eligibility {
-            WorkspaceEligibilityDiagnostics::Ready => None,
-            WorkspaceEligibilityDiagnostics::AwaitingSnapshot
-            | WorkspaceEligibilityDiagnostics::MissingToplevelMembership { .. } => {
+            WorkspaceEligibilityState::Ready => None,
+            WorkspaceEligibilityState::AwaitingSnapshot
+            | WorkspaceEligibilityState::MissingToplevelInfo { .. }
+            | WorkspaceEligibilityState::MissingWorkspaceProtocol { .. }
+            | WorkspaceEligibilityState::MissingWorkspaceSnapshot { .. }
+            | WorkspaceEligibilityState::MissingToplevelMembership { .. } => {
                 Some(ServiceEffect::FallbackToStockSwitcher(direction))
             }
         }

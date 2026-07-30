@@ -58,7 +58,7 @@ use cosmic_window_switcher::{
     FractionalScale, GridLayout, HoldModifiers, InvocationDirection, InvocationRequest,
     RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, ShmConstraints, ShmFrameLayout,
     SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowSnapshot,
-    WorkspaceEligibilityDiagnostics, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
+    WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 use super::{
@@ -75,28 +75,16 @@ use crate::shm_capture::{
 const REVEAL_DELAY: Duration = Duration::from_millis(100);
 const SESSION_READINESS_TIMEOUT: Duration = Duration::from_millis(500);
 const TOPLEVEL_INFO_INTERFACE: &str = "zcosmic_toplevel_info_v1";
+const WORKSPACE_MANAGER_INTERFACE: &str = "ext_workspace_manager_v1";
+const REQUIRED_TOPLEVEL_INFO_VERSION: u32 = 3;
+const REQUIRED_WORKSPACE_MANAGER_VERSION: u32 = 1;
 
-fn advertised_global_version(globals: &GlobalList, interface: &str) -> Result<u32> {
-    globals
-        .contents()
-        .with_list(|list| {
-            list.iter()
-                .find(|global| global.interface == interface)
-                .map(|global| global.version)
-        })
-        .with_context(|| format!("the compositor does not advertise {interface}"))
-}
-
-fn bind_workspace_state(
-    registry_state: &RegistryState,
-    queue_handle: &QueueHandle<ProtocolObserver>,
-) -> Result<WorkspaceState> {
-    let workspace_state = WorkspaceState::new(registry_state, queue_handle);
-    workspace_state
-        .workspace_manager()
-        .get()
-        .context("the compositor does not expose live workspace state")?;
-    Ok(workspace_state)
+fn advertised_global_version(globals: &GlobalList, interface: &str) -> Option<u32> {
+    globals.contents().with_list(|list| {
+        list.iter()
+            .find(|global| global.interface == interface)
+            .map(|global| global.version)
+    })
 }
 
 pub(super) struct WindowObserver {
@@ -117,7 +105,9 @@ impl WindowObserver {
             registry_queue_init(&connection).context("read Wayland globals")?;
         let queue_handle = event_queue.handle();
         let advertised_toplevel_info_version =
-            advertised_global_version(&globals, TOPLEVEL_INFO_INTERFACE)?;
+            advertised_global_version(&globals, TOPLEVEL_INFO_INTERFACE);
+        let advertised_workspace_manager_version =
+            advertised_global_version(&globals, WORKSPACE_MANAGER_INTERFACE);
         let compositor =
             CompositorState::bind(&globals, &queue_handle).context("bind wl_compositor")?;
         let layer_shell =
@@ -145,13 +135,13 @@ impl WindowObserver {
         let cosmic_toplevel_info = registry_state
             .bind_one::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
                 &queue_handle,
-                3..=3,
+                2..=3,
                 GlobalData,
             )
-            .context("the compositor does not expose COSMIC Window workspace state")?;
+            .ok();
         let toplevel_manager = ToplevelManagerState::try_new(&registry_state, &queue_handle)
             .context("the compositor does not expose COSMIC Window management")?;
-        let workspace_state = bind_workspace_state(&registry_state, &queue_handle)?;
+        let workspace_state = WorkspaceState::new(&registry_state, &queue_handle);
         let state = ProtocolObserver {
             queue_handle: queue_handle.clone(),
             registry_state,
@@ -175,6 +165,7 @@ impl WindowObserver {
             service,
             management_can_activate: false,
             advertised_toplevel_info_version,
+            advertised_workspace_manager_version,
             workspace_snapshot_received: false,
             toplevel_snapshot_received: false,
             accessibility: AccessibilityBridge::new(),
@@ -216,25 +207,21 @@ impl WindowObserver {
             self.event_queue
                 .roundtrip(&mut self.state)
                 .context("receive initial COSMIC Window and workspace state")?;
-            if round >= 2 && self.state.workspace_snapshot_received {
+            if round >= 2
+                && (self.state.workspace_snapshot_received
+                    || self.state.advertised_workspace_manager_version
+                        < Some(REQUIRED_WORKSPACE_MANAGER_VERSION))
+            {
                 break;
             }
         }
-        if !self.state.workspace_snapshot_received {
-            bail!("COSMIC did not provide a complete workspace snapshot");
-        }
+        let workspace_eligibility = self.state.workspace_eligibility_state();
         let mut service = self
             .state
             .service
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        service.set_workspace_eligibility_diagnostics(if self.state.toplevel_snapshot_received {
-            WorkspaceEligibilityDiagnostics::Ready
-        } else {
-            WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
-                advertised_version: self.state.advertised_toplevel_info_version,
-            }
-        });
+        service.set_workspace_eligibility_state(workspace_eligibility);
         service.complete_initial_discovery();
         Ok(())
     }
@@ -292,7 +279,7 @@ impl WindowObserver {
 struct ObservedWindow {
     key: ObservationKey,
     foreign_toplevel: ext_foreign_toplevel_handle_v1::ExtForeignToplevelHandleV1,
-    cosmic_toplevel: zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1,
+    cosmic_toplevel: Option<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1>,
     title: String,
     application_id: String,
     outputs: Vec<wl_output::WlOutput>,
@@ -335,13 +322,14 @@ struct ProtocolObserver {
     capture_model: CaptureSessionModel,
     capture_clock: Instant,
     _foreign_toplevel_list: ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
-    cosmic_toplevel_info: zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1,
+    cosmic_toplevel_info: Option<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>,
     windows: Vec<ObservedWindow>,
     observations: ObservationLedger,
     next_observation_key: u64,
     service: SharedService,
     management_can_activate: bool,
-    advertised_toplevel_info_version: u32,
+    advertised_toplevel_info_version: Option<u32>,
+    advertised_workspace_manager_version: Option<u32>,
     workspace_snapshot_received: bool,
     toplevel_snapshot_received: bool,
     accessibility: AccessibilityBridge,
@@ -642,7 +630,7 @@ impl ProtocolObserver {
                         .find(|candidate| {
                             self.observations.window_id(candidate.key) == Some(&window)
                         })
-                        .map(|candidate| candidate.cosmic_toplevel.clone());
+                        .and_then(|candidate| candidate.cosmic_toplevel.clone());
                     if let (Some(target), Some(seat)) = (target, self.seat.as_ref()) {
                         self.toplevel_manager.manager.activate(&target, seat);
                     }
@@ -720,17 +708,66 @@ impl ProtocolObserver {
             .windows
             .iter()
             .all(|window| window.sticky || !window.committed_workspaces.is_empty());
-        let diagnostics = if self.toplevel_snapshot_received {
-            WorkspaceEligibilityDiagnostics::Ready
-        } else {
-            WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
+        self.update_workspace_eligibility_state();
+    }
+
+    fn workspace_eligibility_state(&self) -> WorkspaceEligibilityState {
+        let Some(toplevel_version) = self
+            .advertised_toplevel_info_version
+            .filter(|version| *version >= REQUIRED_TOPLEVEL_INFO_VERSION)
+        else {
+            return WorkspaceEligibilityState::MissingToplevelInfo {
                 advertised_version: self.advertised_toplevel_info_version,
-            }
+                required_version: REQUIRED_TOPLEVEL_INFO_VERSION,
+            };
         };
+        let Some(workspace_version) = self
+            .advertised_workspace_manager_version
+            .filter(|version| *version >= REQUIRED_WORKSPACE_MANAGER_VERSION)
+        else {
+            return WorkspaceEligibilityState::MissingWorkspaceProtocol {
+                advertised_version: self.advertised_workspace_manager_version,
+                required_version: REQUIRED_WORKSPACE_MANAGER_VERSION,
+            };
+        };
+        if !self.workspace_snapshot_received {
+            return WorkspaceEligibilityState::MissingWorkspaceSnapshot {
+                advertised_version: workspace_version,
+            };
+        }
+        if !self.toplevel_snapshot_received {
+            return WorkspaceEligibilityState::MissingToplevelMembership {
+                advertised_version: toplevel_version,
+            };
+        }
+        WorkspaceEligibilityState::Ready
+    }
+
+    fn update_workspace_eligibility_state(&self) {
+        let state = self.workspace_eligibility_state();
         self.service
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .set_workspace_eligibility_diagnostics(diagnostics);
+            .set_workspace_eligibility_state(state);
+    }
+
+    fn await_toplevel_snapshot(&mut self) {
+        self.toplevel_snapshot_received = false;
+        if self
+            .advertised_toplevel_info_version
+            .is_some_and(|version| version >= REQUIRED_TOPLEVEL_INFO_VERSION)
+            && self
+                .advertised_workspace_manager_version
+                .is_some_and(|version| version >= REQUIRED_WORKSPACE_MANAGER_VERSION)
+            && self.workspace_snapshot_received
+        {
+            self.service
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .set_workspace_eligibility_state(WorkspaceEligibilityState::AwaitingSnapshot);
+        } else {
+            self.update_workspace_eligibility_state();
+        }
     }
 
     fn desktop_snapshot(&self) -> DesktopSnapshot {
@@ -1635,6 +1672,7 @@ impl WorkspaceHandler for ProtocolObserver {
 
     fn done(&mut self) {
         self.workspace_snapshot_received = true;
+        self.update_workspace_eligibility_state();
     }
 }
 
@@ -1771,19 +1809,10 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, GlobalData
     ) {
         match event {
             ext_foreign_toplevel_list_v1::Event::Toplevel { toplevel } => {
-                state.toplevel_snapshot_received = false;
-                state
-                    .service
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .set_workspace_eligibility_diagnostics(
-                        WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
-                    );
-                let cosmic_toplevel = state.cosmic_toplevel_info.get_cosmic_toplevel(
-                    &toplevel,
-                    queue_handle,
-                    GlobalData,
-                );
+                state.await_toplevel_snapshot();
+                let cosmic_toplevel = state.cosmic_toplevel_info.as_ref().map(|toplevel_info| {
+                    toplevel_info.get_cosmic_toplevel(&toplevel, queue_handle, GlobalData)
+                });
                 let key = ObservationKey(state.next_observation_key);
                 state.next_observation_key += 1;
                 state.windows.push(ObservedWindow {
@@ -1898,11 +1927,12 @@ impl Dispatch<zcosmic_toplevel_handle_v1::ZcosmicToplevelHandleV1, GlobalData>
         let Some(key) = state
             .windows
             .iter()
-            .find(|window| window.cosmic_toplevel == *toplevel)
+            .find(|window| window.cosmic_toplevel.as_ref() == Some(toplevel))
             .map(|window| window.key)
         else {
             return;
         };
+        state.await_toplevel_snapshot();
         match event {
             zcosmic_toplevel_handle_v1::Event::OutputEnter { output } => {
                 if let Some(window) = state.windows.iter_mut().find(|window| window.key == key)
@@ -2039,7 +2069,7 @@ mod tests {
 
     use cosmic_window_switcher::{
         MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId,
-        WorkspaceEligibilityDiagnostics,
+        WorkspaceEligibilityState,
     };
 
     use super::{Observation, ObservationKey, ObservationLedger};
@@ -2085,7 +2115,7 @@ mod tests {
             ServiceDiagnostics {
                 mru_history: MruHistoryAccuracy::WarmUp,
                 mru_order: vec![WindowId::from("activated"), WindowId::from("delayed")],
-                workspace_eligibility: WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
+                workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
             }
         );
     }

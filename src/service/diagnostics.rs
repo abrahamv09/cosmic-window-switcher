@@ -10,7 +10,7 @@ use zbus::{
 
 use cosmic_window_switcher::{
     InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics, WindowId,
-    WorkspaceEligibilityDiagnostics,
+    WorkspaceEligibilityState,
 };
 
 use super::{BUS_NAME, INTERFACE_NAME, OBJECT_PATH, PendingInvocations, SharedService};
@@ -57,11 +57,39 @@ struct DbusDiagnostics {
     mru_warm_up: bool,
     mru_order: Vec<String>,
     workspace_eligibility: String,
-    toplevel_info_version: u32,
+    advertised_version: u32,
+    required_version: u32,
 }
 
 impl From<ServiceDiagnostics> for DbusDiagnostics {
     fn from(diagnostics: ServiceDiagnostics) -> Self {
+        let (workspace_eligibility, advertised_version, required_version) =
+            match diagnostics.workspace_eligibility {
+                WorkspaceEligibilityState::AwaitingSnapshot => ("awaiting-snapshot", 0, 0),
+                WorkspaceEligibilityState::Ready => ("ready", 0, 0),
+                WorkspaceEligibilityState::MissingToplevelInfo {
+                    advertised_version,
+                    required_version,
+                } => (
+                    "missing-toplevel-info",
+                    advertised_version.unwrap_or(0),
+                    required_version,
+                ),
+                WorkspaceEligibilityState::MissingWorkspaceProtocol {
+                    advertised_version,
+                    required_version,
+                } => (
+                    "missing-workspace-protocol",
+                    advertised_version.unwrap_or(0),
+                    required_version,
+                ),
+                WorkspaceEligibilityState::MissingWorkspaceSnapshot { advertised_version } => {
+                    ("missing-workspace-snapshot", advertised_version, 1)
+                }
+                WorkspaceEligibilityState::MissingToplevelMembership { advertised_version } => {
+                    ("missing-toplevel-membership", advertised_version, 3)
+                }
+            };
         Self {
             mru_warm_up: diagnostics.mru_history == MruHistoryAccuracy::WarmUp,
             mru_order: diagnostics
@@ -69,21 +97,9 @@ impl From<ServiceDiagnostics> for DbusDiagnostics {
                 .into_iter()
                 .map(|id| id.as_str().to_owned())
                 .collect(),
-            workspace_eligibility: match diagnostics.workspace_eligibility {
-                WorkspaceEligibilityDiagnostics::AwaitingSnapshot => "awaiting-snapshot",
-                WorkspaceEligibilityDiagnostics::Ready => "ready",
-                WorkspaceEligibilityDiagnostics::MissingToplevelMembership { .. } => {
-                    "missing-toplevel-membership"
-                }
-            }
-            .to_owned(),
-            toplevel_info_version: match diagnostics.workspace_eligibility {
-                WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
-                    advertised_version,
-                } => advertised_version,
-                WorkspaceEligibilityDiagnostics::AwaitingSnapshot
-                | WorkspaceEligibilityDiagnostics::Ready => 0,
-            },
+            workspace_eligibility: workspace_eligibility.to_owned(),
+            advertised_version,
+            required_version,
         }
     }
 }
@@ -102,13 +118,30 @@ impl From<DbusDiagnostics> for ServiceDiagnostics {
                 .map(WindowId::from)
                 .collect(),
             workspace_eligibility: match diagnostics.workspace_eligibility.as_str() {
-                "ready" => WorkspaceEligibilityDiagnostics::Ready,
-                "missing-toplevel-membership" => {
-                    WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
-                        advertised_version: diagnostics.toplevel_info_version,
+                "ready" => WorkspaceEligibilityState::Ready,
+                "missing-toplevel-info" => WorkspaceEligibilityState::MissingToplevelInfo {
+                    advertised_version: (diagnostics.advertised_version != 0)
+                        .then_some(diagnostics.advertised_version),
+                    required_version: diagnostics.required_version,
+                },
+                "missing-workspace-protocol" => {
+                    WorkspaceEligibilityState::MissingWorkspaceProtocol {
+                        advertised_version: (diagnostics.advertised_version != 0)
+                            .then_some(diagnostics.advertised_version),
+                        required_version: diagnostics.required_version,
                     }
                 }
-                _ => WorkspaceEligibilityDiagnostics::AwaitingSnapshot,
+                "missing-workspace-snapshot" => {
+                    WorkspaceEligibilityState::MissingWorkspaceSnapshot {
+                        advertised_version: diagnostics.advertised_version,
+                    }
+                }
+                "missing-toplevel-membership" => {
+                    WorkspaceEligibilityState::MissingToplevelMembership {
+                        advertised_version: diagnostics.advertised_version,
+                    }
+                }
+                _ => WorkspaceEligibilityState::AwaitingSnapshot,
             },
         }
     }
@@ -141,5 +174,49 @@ impl ServiceInterface {
         };
         self.pending_invocations.push(direction);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dbus_diagnostics_preserve_each_workspace_eligibility_state() {
+        let states = [
+            WorkspaceEligibilityState::AwaitingSnapshot,
+            WorkspaceEligibilityState::Ready,
+            WorkspaceEligibilityState::MissingToplevelInfo {
+                advertised_version: None,
+                required_version: 3,
+            },
+            WorkspaceEligibilityState::MissingToplevelInfo {
+                advertised_version: Some(2),
+                required_version: 3,
+            },
+            WorkspaceEligibilityState::MissingWorkspaceProtocol {
+                advertised_version: None,
+                required_version: 1,
+            },
+            WorkspaceEligibilityState::MissingWorkspaceSnapshot {
+                advertised_version: 1,
+            },
+            WorkspaceEligibilityState::MissingToplevelMembership {
+                advertised_version: 3,
+            },
+        ];
+
+        for state in states {
+            let diagnostics = ServiceDiagnostics {
+                mru_history: MruHistoryAccuracy::WarmUp,
+                mru_order: vec![WindowId::from("opaque")],
+                workspace_eligibility: state,
+            };
+
+            assert_eq!(
+                ServiceDiagnostics::from(DbusDiagnostics::from(diagnostics.clone())),
+                diagnostics
+            );
+        }
     }
 }

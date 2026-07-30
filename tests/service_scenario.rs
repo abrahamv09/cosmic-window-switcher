@@ -4,7 +4,7 @@ use cosmic_window_switcher::{
     CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, HoldModifiers,
     InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
     SessionDisplay, SwitcherGrid, SwitcherItem, SwitcherService, WindowEvent, WindowId,
-    WindowSnapshot, WorkspaceEligibilityDiagnostics, WorkspaceGroupSnapshot, WorkspaceId,
+    WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
     WorkspaceSnapshot,
 };
 
@@ -158,11 +158,9 @@ fn failed_session_readiness_falls_back_in_the_requested_direction() {
 #[test]
 fn missing_workspace_membership_falls_back_in_each_requested_direction() {
     let mut service = service_with_mru_order(&["focused", "previous"]);
-    service.set_workspace_eligibility_diagnostics(
-        WorkspaceEligibilityDiagnostics::MissingToplevelMembership {
-            advertised_version: 3,
-        },
-    );
+    service.set_workspace_eligibility_state(WorkspaceEligibilityState::MissingToplevelMembership {
+        advertised_version: 3,
+    });
 
     assert_eq!(
         service.workspace_invocation_fallback(InvocationDirection::Next),
