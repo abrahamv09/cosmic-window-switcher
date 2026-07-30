@@ -6,9 +6,16 @@ use std::{
     ops::{BitOr, Range},
 };
 
+mod capture;
+
+pub use capture::{
+    CaptureEffect, CaptureFailure, CaptureSessionModel, FrameDamage, InvalidThumbnailFrame,
+    RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout, ThumbnailFrame,
+};
+
 pub const APPLICATION_ID: &str = "io.github.abrahamv09.CosmicWindowSwitcher";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct WindowId(String);
 
 impl From<&str> for WindowId {
@@ -301,6 +308,8 @@ pub struct SwitcherItem {
     application_id: String,
     title: String,
     application_icon: ApplicationIcon,
+    thumbnail: Option<ThumbnailFrame>,
+    thumbnail_failure: Option<CaptureFailure>,
     selected: bool,
     position: usize,
     set_size: usize,
@@ -333,6 +342,8 @@ impl SwitcherItem {
             application_id,
             title,
             application_icon,
+            thumbnail: None,
+            thumbnail_failure: None,
             selected: false,
             position: 0,
             set_size: 0,
@@ -357,6 +368,25 @@ impl SwitcherItem {
     #[must_use]
     pub const fn application_icon(&self) -> &ApplicationIcon {
         &self.application_icon
+    }
+
+    #[must_use]
+    pub const fn thumbnail(&self) -> Option<&ThumbnailFrame> {
+        self.thumbnail.as_ref()
+    }
+
+    pub fn update_thumbnail(&mut self, thumbnail: ThumbnailFrame) {
+        self.thumbnail = Some(thumbnail);
+        self.thumbnail_failure = None;
+    }
+
+    pub const fn degrade_thumbnail(&mut self, reason: CaptureFailure) {
+        self.thumbnail_failure = Some(reason);
+    }
+
+    #[must_use]
+    pub const fn thumbnail_failure(&self) -> Option<CaptureFailure> {
+        self.thumbnail_failure
     }
 
     #[must_use]
@@ -484,6 +514,22 @@ impl SwitcherGrid {
         };
         self.items.remove(index);
         update_accessible_positions(&mut self.items);
+        true
+    }
+
+    pub fn update_thumbnail(&mut self, window: &WindowId, thumbnail: ThumbnailFrame) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.window == *window) else {
+            return false;
+        };
+        item.update_thumbnail(thumbnail);
+        true
+    }
+
+    pub fn degrade_thumbnail(&mut self, window: &WindowId, reason: CaptureFailure) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| item.window == *window) else {
+            return false;
+        };
+        item.degrade_thumbnail(reason);
         true
     }
 }

@@ -96,20 +96,37 @@ modifier activates the selection. An invocation without a hold modifier uses
 Latch Mode, where Enter activates and Escape cancels. A single Eligible Window
 is a no-op.
 
-If the reveal delay expires, the service reveals a centered Switcher Grid in stable
-MRU Order. Each Switcher Item uses its installed application icon when
-available, an application-identity monogram fallback otherwise, its Window
-title, and a high-contrast selected state. The same names, positions, focus,
-and selected state are exposed to assistive technology through AT-SPI. `Tab`
-moves forward, `Shift+Tab` moves backward, and both directions wrap. The grid
-remains above fullscreen content without changing the selected Window's
-fullscreen state. Closed Windows disappear without reordering survivors, while
-Windows opened during switching wait for the next Switching Session. When all
-rows do not fit, rendering follows the selected row so it remains visible.
+If the reveal delay expires, the service reveals a centered Switcher Grid in
+stable MRU Order. Each visible Switcher Item starts one damage-driven
+shared-memory capture stream. The compositor's exact source dimensions and a
+supported four-byte SHM format are negotiated before the first frame; full
+Window contents are then fitted into the card without cropping or distortion.
+The default Refresh Ceiling is 30 FPS, unchanged Windows do not produce
+duplicate frames, and a stream never has more than one request outstanding.
+Rows outside the Grid Viewport release their capture streams.
+
+Every card retains its installed application icon (or an
+application-identity monogram), Window title, and high-contrast selected state.
+A denied, stopped, failed, protected, or unsupported Window capture degrades
+only that Switcher Item to its icon-and-title card. Native Wayland Windows and
+compositor-managed XWayland Windows use the same capture path. The same names,
+positions, focus, and selected state are exposed to assistive technology
+through AT-SPI. `Tab` moves forward, `Shift+Tab` moves backward, and both
+directions wrap. The grid remains above fullscreen content without changing
+the selected Window's fullscreen state. Closed Windows disappear without
+reordering survivors, while Windows opened during switching wait for the next
+Switching Session. When all rows do not fit, rendering follows the selected row
+so it remains visible.
 
 If the grid cannot be rendered or targeted to the Session Display before
 Session Readiness times out, the resident service delegates that invocation to
 the stock switcher instead of leaving an invisible session open.
+
+Live Thumbnail pixels stay only in compositor, process, and anonymous
+shared-memory allocations. Closing a Window, leaving the Grid Viewport, ending
+the Switching Session, or terminating the service destroys the corresponding
+capture sessions and releases their buffers. No capture or diagnostic path
+writes those pixels to disk.
 
 Each command uses a bounded D-Bus call and makes one bounded activation/recovery
 attempt. If the service remains unavailable or Session Readiness fails, it

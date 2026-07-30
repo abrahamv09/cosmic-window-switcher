@@ -2,19 +2,22 @@
 
 use anyhow::{Context, Result};
 use cosmic_text::{Attrs, Buffer, Color, FontSystem, Metrics, Shaping, SwashCache, Wrap};
-use cosmic_window_switcher::{SwitcherGrid, SwitcherItem};
+use cosmic_window_switcher::{SwitcherGrid, SwitcherItem, ThumbnailFrame, WindowId};
 
 use super::icons::{IconImage, IconResolver};
 
-const ITEM_WIDTH: u32 = 220;
-const ITEM_HEIGHT: u32 = 116;
+const ITEM_WIDTH: u32 = 320;
+const ITEM_HEIGHT: u32 = 240;
 const ITEM_GAP: u32 = 12;
 const GRID_PADDING: u32 = 16;
-const ICON_SIZE: u32 = 56;
+const ICON_SIZE: u32 = 36;
+const THUMBNAIL_PADDING: u32 = 12;
+const THUMBNAIL_HEIGHT: u32 = 172;
 
 pub(super) struct RenderedOverlay {
     pub(super) dimensions: OverlayDimensions,
     pub(super) pixels: Vec<u8>,
+    pub(super) visible_windows: Vec<WindowId>,
 }
 
 #[derive(Clone, Copy)]
@@ -79,6 +82,10 @@ impl OverlayRenderer {
             .context("Switcher Grid area overflow")?;
         let mut pixels =
             vec![0_u32; usize::try_from(pixel_count).context("Switcher Grid is too large")?];
+        let visible_windows = grid.items()[visible_item_range.clone()]
+            .iter()
+            .map(|item| item.window().clone())
+            .collect();
 
         fill_rect(
             &mut pixels,
@@ -113,6 +120,7 @@ impl OverlayRenderer {
                 scale,
             },
             pixels: bytes,
+            visible_windows,
         })
     }
 
@@ -153,9 +161,25 @@ impl OverlayRenderer {
             );
         }
 
+        let thumbnail_rect = Rect::new(
+            x + THUMBNAIL_PADDING * physical_scale,
+            y + THUMBNAIL_PADDING * physical_scale,
+            (ITEM_WIDTH - 2 * THUMBNAIL_PADDING) * physical_scale,
+            THUMBNAIL_HEIGHT * physical_scale,
+        );
+        fill_rect(
+            pixels,
+            surface_width,
+            thumbnail_rect,
+            Color::rgb(14, 16, 22),
+        );
+        if let Some(thumbnail) = item.thumbnail() {
+            draw_thumbnail(pixels, surface_width, thumbnail_rect, thumbnail);
+        }
+
         let icon_rect = Rect::new(
             x + 16 * physical_scale,
-            y + 18 * physical_scale,
+            y + 190 * physical_scale,
             ICON_SIZE * physical_scale,
             ICON_SIZE * physical_scale,
         );
@@ -177,12 +201,12 @@ impl OverlayRenderer {
                 pixels,
                 surface_width,
                 &item.application_icon().fallback_monogram().to_string(),
-                icon_rect.x + 18 * physical_scale,
-                icon_rect.y + 11 * physical_scale,
-                28 * physical_scale,
-                32 * physical_scale,
-                24.0 * font_scale,
-                28.0 * font_scale,
+                icon_rect.x + 10 * physical_scale,
+                icon_rect.y + 5 * physical_scale,
+                20 * physical_scale,
+                24 * physical_scale,
+                18.0 * font_scale,
+                22.0 * font_scale,
                 Color::rgb(255, 255, 255),
             );
         }
@@ -190,10 +214,10 @@ impl OverlayRenderer {
             pixels,
             surface_width,
             item.title(),
-            x + 84 * physical_scale,
-            y + 26 * physical_scale,
-            (ITEM_WIDTH - 100) * physical_scale,
-            66 * physical_scale,
+            x + 64 * physical_scale,
+            y + 197 * physical_scale,
+            (ITEM_WIDTH - 80) * physical_scale,
+            28 * physical_scale,
             16.0 * font_scale,
             22.0 * font_scale,
             Color::rgb(250, 251, 255),
@@ -399,6 +423,44 @@ fn draw_icon(pixels: &mut [u32], surface_width: u32, bounds: Rect, icon: &IconIm
                 Rect::new(offset_x + icon_x, offset_y + icon_y, 1, 1),
                 Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3]),
             );
+        }
+    }
+}
+
+fn draw_thumbnail(
+    pixels: &mut [u32],
+    surface_width: u32,
+    bounds: Rect,
+    thumbnail: &ThumbnailFrame,
+) {
+    let (width, height) = thumbnail.fitted_size(bounds.width, bounds.height);
+    if width == 0 || height == 0 {
+        return;
+    }
+    let offset_x = bounds.x + (bounds.width - width) / 2;
+    let offset_y = bounds.y + (bounds.height - height) / 2;
+    let layout = thumbnail.layout();
+    for target_y in 0..height {
+        let source_y = u64::from(target_y) * u64::from(layout.height) / u64::from(height);
+        for target_x in 0..width {
+            let source_x = u64::from(target_x) * u64::from(layout.width) / u64::from(width);
+            let Some(color) = thumbnail
+                .argb_pixel(
+                    u32::try_from(source_x).unwrap_or(layout.width - 1),
+                    u32::try_from(source_y).unwrap_or(layout.height - 1),
+                )
+                .map(Color)
+            else {
+                continue;
+            };
+            if let Some(target) = pixel_mut(
+                pixels,
+                surface_width,
+                offset_x + target_x,
+                offset_y + target_y,
+            ) {
+                *target = color.0;
+            }
         }
     }
 }

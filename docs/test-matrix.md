@@ -35,3 +35,26 @@ Use this machine for independent package installation, upgrade, shortcut restora
 - Both hardware environments pass a manual release checklist covering Hold Mode, Latch Mode, forward and reverse cycling, modifier release, DMA-BUF capture, forced shared-memory fallback, Native Wayland Windows, XWayland Windows, workspace modes, multiple displays where available, fullscreen, minimization, scaling, install, upgrade, stock-switcher fallback, disable, and uninstall restoration.
 - Workspace movement cannot pass its release gate until the compositor advertises and honors the same supported request in an end-to-end runtime probe.
 - Launching in GNOME, Ubuntu, or another non-COSMIC session exits cleanly with an unsupported-environment diagnostic and never installs or changes shortcuts there.
+
+## Live Thumbnail contract
+
+Run `cargo run --release -- probe` and the resident Switcher Service on the
+development COSMIC Session. The probe output may include opaque Window ids,
+application identities, exact dimensions, allocation byte counts, and SHM
+formats; it must never include pixels or titles unless title output is
+explicitly requested.
+
+| Contract case | Setup and observation |
+| --- | --- |
+| Native Wayland Window | Open a Native Wayland terminal, invoke the switcher, and verify an exact-size SHM frame and an uncropped card. |
+| Representative XWayland Window | Open the release-matrix XWayland client beside the Native Wayland Window and verify that it remains in MRU Order whether capture succeeds or degrades. |
+| Changed content | Animate or scroll one visible Window and verify damage-driven updates no faster than the selected Refresh Ceiling. |
+| Unchanged content | Leave another visible Window static and verify that no duplicate frame is requested while the compositor waits for damage. |
+| Minimized Window | Minimize an Eligible Window before invocation and verify its last frame or icon-and-title fallback remains switchable and restores on activation. |
+| Per-Window failure | Exercise protected content or terminate one capture source and verify only its Switcher Item degrades. |
+| Session stop | Cancel and commit separate Switching Sessions, then close a Window during another session; verify all corresponding capture sessions and anonymous SHM allocations are released. |
+
+The deterministic `live_thumbnail_capture` test exercises the same public
+capture contract with fake damage, time, constraints, failure, viewport, Window
+closure, and session-stop events. It is the repeatable regression suite; the
+live matrix verifies compositor interoperability.
