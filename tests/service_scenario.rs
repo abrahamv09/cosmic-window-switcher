@@ -4,9 +4,9 @@ use cosmic_window_switcher::{
     CaptureBackend, CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot,
     GridNavigationDirection, HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling,
     ServiceEffect, ServiceEvent, SessionDisplay, SessionInterruption, SessionLifecycleModel,
-    SessionLifecycleSignal, SwitcherGrid, SwitcherItem, SwitcherService, SwitchingEvent,
-    WindowEvent, WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState,
-    WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
+    SessionLifecycleSignal, ShmFormat, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitcherService,
+    SwitchingEvent, ThumbnailFrame, WindowEvent, WindowId, WindowScope, WindowSnapshot,
+    WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 fn window(id: &str) -> WindowId {
@@ -349,6 +349,51 @@ fn lifecycle_sources_cannot_reactivate_until_every_privacy_boundary_clears() {
             SessionInterruption::SessionShutdown
         ))
     );
+}
+
+#[test]
+fn default_external_payloads_do_not_receive_window_titles_or_pixels() {
+    const PRIVATE_TITLE: &str = "private banking title";
+    const PIXEL_SENTINEL: &str = "222, 173, 190, 239";
+    let mut private_item = SwitcherItem::new(
+        window("opaque-private-window"),
+        "org.example.Private".to_owned(),
+        PRIVATE_TITLE.to_owned(),
+    );
+    private_item.update_thumbnail(
+        ThumbnailFrame::new(
+            ShmFrameLayout {
+                width: 1,
+                height: 1,
+                stride: 4,
+                byte_len: 4,
+                format: ShmFormat::Argb8888,
+            },
+            vec![222, 173, 190, 239],
+        )
+        .expect("the sentinel is one exact pixel"),
+    );
+
+    let mut service = service_with_mru_order(&["opaque-current", "opaque-private-window"]);
+    let request = InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::ALT,
+    };
+    let effects = service.invoke(request);
+    let diagnostics = service.diagnostics();
+    let default_payloads = [
+        format!("{effects:?}"),
+        format!("{diagnostics:?}"),
+        diagnostics.localized(cosmic_window_switcher::Locale::English),
+        format!("{request:?}"),
+    ];
+
+    assert_eq!(private_item.title(), PRIVATE_TITLE);
+    assert!(private_item.thumbnail().is_some());
+    for payload in default_payloads {
+        assert!(!payload.contains(PRIVATE_TITLE));
+        assert!(!payload.contains(PIXEL_SENTINEL));
+    }
 }
 
 #[test]
