@@ -39,3 +39,15 @@
 - Ticket remains incomplete: no installed compositor capability can yet be both
   advertised and honored, and the package also emitted no initial ext-workspace
   membership for the discovered Windows.
+- Revalidated on 2026-08-02 against the still-installed `cosmic-comp 1.0.0`
+  build `ffeda3375a7e60ace6ae64b19432f1f0c1fc1034`: manager v4 again
+  advertised `[1, 2, 3, 4, 6]`, all discovered Windows again had empty output
+  and workspace membership, and no atomic toplevel-info `done` event arrived.
+  No move request was issued.
+- The available Pop!_OS package candidate
+  `0.1~1785355703~24.04~091583a` is the already-investigated upstream revision
+  `091583ac84abac02967ae358cf9570ddfef63b31`, which has the same mismatch.
+  Upstream `cosmic-comp` master at
+  `d3ffa814941f6294864d5ecdc9796f818ddb1ac8` still advertises the ignored
+  legacy request while handling the unadvertised ext-workspace request, and an
+  exact-symbol GitHub issue/PR search found no tracked correction.

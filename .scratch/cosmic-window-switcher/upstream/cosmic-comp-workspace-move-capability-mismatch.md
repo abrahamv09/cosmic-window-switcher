@@ -2,6 +2,8 @@
 
 Prepared: 2026-07-29
 
+Revalidated: 2026-08-02
+
 ## Environment
 
 - Pop!_OS 24.04 COSMIC Wayland session
@@ -94,3 +96,18 @@ the two discovered Windows. The reproducer reports this separately and refuses
 to claim a successful move without resulting membership. This may need a
 separate upstream report if it remains after the capability advertisement is
 corrected.
+
+## Revalidation
+
+On 2026-08-02, rerunning the inventory against the installed `ffeda33` build
+reproduced the same capability list, empty Window output/workspace membership,
+and missing atomic toplevel-info `done` event. The probe did not issue a move
+request.
+
+The Pop!_OS package candidate was
+`0.1~1785355703~24.04~091583a`; that source revision is already covered by the
+evidence above and retains the mismatch. Upstream `master` at
+`d3ffa814941f6294864d5ecdc9796f818ddb1ac8` also still advertises
+`MoveToWorkspace`, ignores `MoveToWorkspace`, and handles
+`MoveToExtWorkspace`. A GitHub issue and pull-request search for the exact
+protocol symbols found no existing tracked correction.
