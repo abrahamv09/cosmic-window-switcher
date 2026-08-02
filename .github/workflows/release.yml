@@ -32,10 +32,14 @@ jobs:
       - name: Sign checksum manifest
         env:
           RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
         run: |
           test -n "$RELEASE_GPG_PRIVATE_KEY"
+          test -n "$RELEASE_GPG_PASSPHRASE"
           printf '%s' "$RELEASE_GPG_PRIVATE_KEY" | gpg --batch --import
-          gpg --batch --yes --armor --detach-sign \
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$RELEASE_GPG_PASSPHRASE" \
+            --armor --detach-sign \
             --output target/release-artifacts/SHA256SUMS.asc \
             target/release-artifacts/SHA256SUMS
           gpg --verify \
