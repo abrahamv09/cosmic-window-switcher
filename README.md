@@ -1,8 +1,8 @@
 # COSMIC Window Switcher
 
 COSMIC Window Switcher is a native Rust Window switcher for the COSMIC desktop.
-The executable includes a resident Switcher Service plus integration probes for
-Window switching and workspace-move capability verification. The service
+The executable includes a resident Switcher Service plus an integration probe
+for Window switching. The service
 observes Window focus metadata throughout a COSMIC Session and keeps the current
 MRU Order without opening a visible Window or starting thumbnail capture. Its
 quick-switch path captures the initial hold modifiers, selects in the requested
@@ -196,6 +196,12 @@ each Window's committed COSMIC workspace membership. A spanning group includes
 its active workspace across every display; separate-display groups contribute
 the active workspace from each display.
 
+Selecting a Window on another workspace uses COSMIC's normal activation
+behavior to follow that Window to its existing workspace without relocating
+it. This app does not show a workspace view or expose workspace targets;
+COSMIC's workspace interface owns workspace organization. [ADR-0013](docs/adr/0013-leave-workspace-management-to-cosmic.md)
+records that product boundary.
+
 The service creates exactly one overlay. It prefers the output containing the
 Window that was focused at invocation; when COSMIC omits per-Window output
 membership, All Workspaces deterministically uses an output assigned to a
@@ -225,30 +231,3 @@ attempt. If the service remains unavailable or Session Readiness fails, it
 executes `/usr/bin/cosmic-launcher alt-tab` or
 `/usr/bin/cosmic-launcher shift-alt-tab` directly. It never redispatches the
 overridden semantic shortcut action.
-
-## Verify workspace-move capability
-
-First inventory the packaged compositor's advertised management protocol,
-capabilities, workspace topology, Window ids, workspace selectors, and output
-names:
-
-```sh
-cargo run --release -- probe-workspace-move
-```
-
-The inventory distinguishes a spanning workspace group from separate-display
-workspace groups. To move one test Window to another workspace, copy the opaque
-Window id and exact workspace selector from that output:
-
-```sh
-cargo run --release -- probe-workspace-move \
-  --window <window-id> \
-  --workspace <target-workspace-selector>
-```
-
-Add `--output <output-name>` if a target in a multi-output workspace group
-cannot be resolved from the Window's current output. The probe sends exactly
-one `move_to_ext_workspace` request only when the compositor advertises
-management protocol v4 or newer and capability 8. It then reads the resulting
-workspace membership back from COSMIC. Missing, ignored, or rejected
-capabilities fail clearly without trying the unadvertised legacy path.

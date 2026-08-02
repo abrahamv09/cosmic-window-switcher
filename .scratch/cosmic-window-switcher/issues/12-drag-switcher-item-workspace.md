@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Respect COSMIC Window, workspace, and display state; 11 — Move one Window through a verified workspace capability.
 
-**Status:** ready-for-agent
+**Status:** wontfix
 
 - [ ] Only a deliberate drag gesture from a Switcher Item begins workspace movement.
 - [ ] Targets follow live COSMIC workspace groups, coordinates, orientation, and separate/spanning display policy.
@@ -15,3 +15,9 @@
 - [ ] The UI does not expose a target when the verified move capability is unavailable.
 - [ ] The v1 pointer-only accessibility limitation and planned v2 keyboard picker are documented.
 
+## Answer
+
+The switcher does not duplicate COSMIC's workspace interface. It displays and
+activates application Windows across all workspaces but does not expose
+workspace targets or relocate Windows. This ticket was removed from scope by
+ADR-0013.

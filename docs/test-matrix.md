@@ -33,7 +33,6 @@ Use this machine for independent package installation, upgrade, shortcut restora
 - Protocol-level integration tests run wherever they do not require physical compositor hardware, including atomic Session Readiness failure, direction-preserving stock-switcher fallback, and Session Deactivation cleanup.
 - Compatibility tests exercise the minimum Capability Contract, compatible newer protocol versions, missing required capabilities, and ignored optional capabilities.
 - Both hardware environments pass a manual release checklist covering Hold Mode, Latch Mode, forward and reverse cycling, modifier release, DMA-BUF capture, forced shared-memory fallback, Native Wayland Windows, XWayland Windows, workspace modes, multiple displays where available, fullscreen, minimization, scaling, install, upgrade, stock-switcher fallback, disable, and uninstall restoration.
-- Workspace movement cannot pass its release gate until the compositor advertises and honors the same supported request in an end-to-end runtime probe.
 - Launching in GNOME, Ubuntu, or another non-COSMIC session exits cleanly with an unsupported-environment diagnostic and never installs or changes shortcuts there.
 
 ## Live Thumbnail contract
@@ -60,21 +59,19 @@ capture contract with fake damage, time, constraints, failure, viewport, Window
 closure, and session-stop events. It is the repeatable regression suite; the
 live matrix verifies compositor interoperability.
 
-## Live Window and workspace-state contract
+## Live Window and workspace contract
 
-Run `cargo run --release -- probe-workspace-move` before each scenario to record
-the compositor's live workspace groups, output assignments, active workspace
-state, and Window membership. Run the resident service, invoke the Switcher
-Grid, and compare its Window set and display placement with that inventory.
-Change COSMIC Workspace Policy while the service remains running and repeat
-the invocation; an already open Switching Session remains stable, while the
-next one uses the new state.
+Run the resident service and invoke the Switcher Grid with application Windows
+distributed across active and inactive workspaces. The default All Workspaces
+scope must include them in one MRU Order. Selecting a Window on another
+workspace must activate its existing workspace and focus it without relocating
+the Window. Workspace views and organization remain owned by COSMIC.
 
 | Contract case | Setup and observation |
 | --- | --- |
-| Spanning workspaces | With two displays in one workspace group, place a Window on each display and verify both are present in one MRU Order. |
-| Separate-display workspaces | Use one workspace group per display, activate a different workspace on each, and verify Windows from both active workspaces are present while inactive-workspace Windows are absent. |
-| Runtime policy change | Switch between spanning and separate-display policy without restarting the service and verify the next Switching Session follows the new groups and active workspaces. |
+| Cross-workspace inclusion | Place application Windows on active and inactive workspaces and verify all are present in one MRU Order. |
+| Cross-workspace activation | Select a Window on another workspace and verify COSMIC activates that workspace and focuses the Window without changing its workspace assignment. |
+| Multiple displays | Place a Window on each available display and verify all are present in one MRU Order. |
 | Minimized Window | Minimize an Eligible Window, select it, and verify COSMIC restores and focuses it. |
 | Dialog and utility Window | Open independently exposed dialog and utility Windows and verify each has its own Switcher Item. |
 | Shell surfaces | Verify COSMIC panels, docks, menus, notifications, and overlays never appear as Switcher Items. |
@@ -83,11 +80,11 @@ next one uses the new state.
 | Multi-output placement | Focus a Window on each available display in turn and verify the sole overlay follows the initially focused Window without duplication. |
 
 The deterministic `workspace_eligibility` and `service_scenario` tests exercise
-the same public snapshot and activation behavior with fake spanning and
-separate-display groups, active-state changes, minimized/fullscreen state,
-dialogs, utility Windows, and mixed Window identities. Shell-surface exclusion
-is exercised at the live foreign-toplevel boundary because shell surfaces are
-not Windows and therefore never enter the domain snapshot.
+the same public snapshot and activation behavior with cross-workspace and
+multi-display Windows, minimized/fullscreen state, dialogs, utility Windows,
+and mixed Window identities. Shell-surface exclusion is exercised at the live
+foreign-toplevel boundary because shell surfaces are not Windows and therefore
+never enter the domain snapshot.
 
 ### Current live result
 

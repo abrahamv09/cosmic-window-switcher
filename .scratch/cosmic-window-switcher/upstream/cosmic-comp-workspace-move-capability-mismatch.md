@@ -4,6 +4,11 @@ Prepared: 2026-07-29
 
 Revalidated: 2026-08-02
 
+Disposition: archived by ADR-0013. COSMIC Window Switcher no longer moves
+Windows or depends on this capability, so no upstream submission or fix is
+required. The commands below describe the historical reproducer, which has
+been removed from the product.
+
 ## Environment
 
 - Pop!_OS 24.04 COSMIC Wayland session

@@ -89,8 +89,8 @@ The rule selecting which discovered Windows enter a Session Window Set. All Work
 _Avoid_: COSMIC Workspace Policy, guessed workspace membership
 
 **All Workspaces**:
-The Window Scope in which every independently exposed application Window participates in one global MRU Order, including Windows on inactive workspaces.
-_Avoid_: Unfiltered fallback, guessed visibility
+The Window Scope in which every independently exposed application Window participates in one global MRU Order, including Windows on inactive workspaces. Selecting a Window follows it to its existing workspace; the switcher never relocates it.
+_Avoid_: Unfiltered fallback, guessed visibility, Workspace Move
 
 **Visible Workspaces**:
 The Window Scope in which only Windows belonging to the Visible Workspace Set participate. It requires an authoritative committed membership snapshot from COSMIC.
@@ -147,7 +147,3 @@ _Avoid_: Live window list, dynamic order
 **Session Display**:
 The display hosting the session's sole Switcher Grid. It is the initially focused Window's display when authoritative membership is available, otherwise a deterministic workspace-group output in All Workspaces.
 _Avoid_: Duplicated overlay, random display
-
-**Workspace Move**:
-The v1 direct-manipulation action that drags a Switcher Item onto a COSMIC workspace target. Moving a Window outside the Visible Workspace Set removes it from the current Session Window Set without ending the Switching Session.
-_Avoid_: Workspace picker, move menu

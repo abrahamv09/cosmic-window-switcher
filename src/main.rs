@@ -9,7 +9,6 @@ mod probe;
 mod service;
 mod settings;
 mod shm_capture;
-mod workspace_move_probe;
 
 #[derive(Debug, Parser)]
 #[command(name = "cosmic-window-switcher", version)]
@@ -32,14 +31,6 @@ enum Command {
         include_titles: bool,
         #[arg(long)]
         live_thumbnails: bool,
-    },
-    ProbeWorkspaceMove {
-        #[arg(long, requires = "workspace")]
-        window: Option<String>,
-        #[arg(long, requires = "window")]
-        workspace: Option<String>,
-        #[arg(long, requires = "window")]
-        output: Option<String>,
     },
 }
 
@@ -89,15 +80,6 @@ fn main() -> Result<()> {
             include_titles,
             live_thumbnails,
         } => probe::run(include_titles, live_thumbnails),
-        Command::ProbeWorkspaceMove {
-            window,
-            workspace,
-            output,
-        } => workspace_move_probe::run(workspace_move_probe::Mode::from_options(
-            window.as_deref(),
-            workspace.as_deref(),
-            output.as_deref(),
-        )?),
     }
 }
 
@@ -148,19 +130,6 @@ fn localized_command(locale: Locale) -> clap::Command {
                 })
                 .mut_arg("live_thumbnails", |argument| {
                     argument.help(locale.text(StringKey::CliLiveThumbnails))
-                })
-        })
-        .mut_subcommand("probe-workspace-move", |command| {
-            localized_command_frame(command, locale)
-                .about(locale.text(StringKey::CliProbeWorkspaceMove))
-                .mut_arg("window", |argument| {
-                    argument.help(locale.text(StringKey::CliWindow))
-                })
-                .mut_arg("workspace", |argument| {
-                    argument.help(locale.text(StringKey::CliWorkspace))
-                })
-                .mut_arg("output", |argument| {
-                    argument.help(locale.text(StringKey::CliOutput))
                 })
         })
 }

@@ -4,12 +4,12 @@
 
 **Blocked by:** 01 — Prove a two-Window COSMIC switch.
 
-**Status:** ready-for-human
+**Status:** wontfix
 
-**Progress:** partially completed
+**Progress:** closed without implementation
 
-**Waiting on:** Upstream COSMIC compositor support for an advertised-and-honored
-`move_to_ext_workspace` capability and atomic Window workspace membership.
+**Decision:** Superseded by ADR-0013; workspace organization remains owned by
+COSMIC and is outside this app's scope.
 
 - [x] Runtime probing records the advertised management protocol version and workspace-move capabilities on the packaged compositor.
 - [x] The client never issues a request whose matching capability is not advertised.
@@ -51,3 +51,12 @@
   `d3ffa814941f6294864d5ecdc9796f818ddb1ac8` still advertises the ignored
   legacy request while handling the unadvertised ext-workspace request, and an
   exact-symbol GitHub issue/PR search found no tracked correction.
+
+## Answer
+
+Workspace movement is no longer part of COSMIC Window Switcher. The product
+shows one global All Workspaces MRU Order and uses COSMIC's normal activation
+behavior to follow the selected Window to its existing workspace. COSMIC's own
+workspace interface remains responsible for organizing and relocating Windows,
+so no compositor patch or verified move capability is required. The dedicated
+move probe and its product code were removed. See ADR-0013.

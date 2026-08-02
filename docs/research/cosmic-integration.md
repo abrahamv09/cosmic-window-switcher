@@ -1,6 +1,6 @@
 # COSMIC integration surface for the app switcher
 
-Status: researched 2026-07-29  
+Status: historical research; product scope superseded by ADR-0013
 Target: Pop!_OS 24.04 LTS, COSMIC Wayland session  
 Scope: v1 feasibility and integration boundaries
 
@@ -18,7 +18,7 @@ The recommended v1 shape is:
 6. COSMIC Settings remains the authority for key bindings. Enabling this switcher changes only the two semantic system-action commands, with ownership-aware restoration.
 7. A standalone settings UI for v1. COSMIC Settings' current source explicitly leaves external plugins unsupported.
 
-There is one material blocker for the proposed v1 mouse drag-to-workspace feature: current upstream `cosmic-comp` advertises the legacy workspace-move capability whose request it ignores, while it implements the new ext-workspace request without advertising that capability. The feature must be runtime-gated until the installed compositor is verified to behave differently, or COSMIC accepts/fixes the upstream capability mismatch.
+The original proposal included mouse drag-to-workspace and found a material compositor capability mismatch. ADR-0013 later removed workspace organization from the product: the switcher follows an activated Window to its existing workspace, while COSMIC's workspace interface owns relocation. The mismatch below remains useful historical integration evidence but is not a v1 blocker.
 
 ## Evidence vocabulary
 
@@ -209,7 +209,6 @@ Before calling v1 complete:
 - Prototype one native Wayland and one XWayland capture through SHM, then DMA-BUF.
 - Verify the hidden-first exclusive layer surface never loses Alt-release.
 - Test separate-display workspaces and spanning workspaces from live protocol state.
-- Resolve or gate the workspace-move capability mismatch.
 - Test ownership-safe shortcut enable, user edits after enable, disable, reinstall, and stock fallback without recursion.
 - Validate screen-reader labels/focus order, reduced motion, high contrast, scaling, multi-monitor placement, and keyboard-only behavior.
 - Keep the switcher atomic: either the custom invocation reaches its minimum ready state, or the stock launcher handles that invocation; never show a partially initialized hybrid.
@@ -218,4 +217,4 @@ Before calling v1 complete:
 
 The core reasons for this project—live thumbnails and stable MRU ordering—are supported. Thumbnail capture is a first-class Wayland/COSMIC protocol path, while MRU is deliberately application-maintained. Native activation, XWayland inclusion, layer-shell keyboard behavior, workspace visibility, COSMIC configuration, and shortcut delegation are all viable.
 
-The unresolved engineering questions are bounded: DMA-BUF-to-iced buffer integration, exact XWayland capture coverage, cold-start MRU behavior, runtime protocol versions on packaged builds, and the upstream workspace-move capability contradiction. Of these, only workspace movement blocks a promised v1 feature; it does not block the core switcher.
+The unresolved engineering questions are bounded: DMA-BUF-to-iced buffer integration, exact XWayland capture coverage, cold-start MRU behavior, and runtime protocol versions on packaged builds. The historical workspace-move capability contradiction does not block the switcher because workspace organization is outside the product boundary established by ADR-0013.
