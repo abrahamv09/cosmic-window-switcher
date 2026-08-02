@@ -64,5 +64,11 @@ and returns safely to stock behavior without overwriting subsequent user edits.
   advertised Window activation and required SHM capture protocols before taking
   its bus name, and the upgrade scenario now models a replaced/stopped user unit
   while persisted lifecycle and manual shortcut state survive.
+- A final concurrency recheck found that invocation dropped the lifecycle lock
+  before D-Bus activation, leaving one enable-versus-activation deadlock window.
+  Invocation now retains the lock through recovery and the complete D-Bus or
+  direct-fallback attempt; an isolated concurrent enable/invoke regression test
+  pauses service enablement and proves both processes finish with a coherent
+  enabled journal and owned semantic commands.
 - Verification passed formatting, all-target type checking, strict
-  all-target/all-feature Clippy, all 121 tests, and an optimized release build.
+  all-target/all-feature Clippy, all 122 tests, and an optimized release build.

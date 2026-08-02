@@ -59,6 +59,11 @@ struct LifecycleLock {
     _file: File,
 }
 
+pub(super) struct InvocationLifecycle {
+    _lock: LifecycleLock,
+    recovered_interrupted_enablement: bool,
+}
+
 pub(super) fn enable() -> Result<()> {
     crate::cosmic_session::verify("integration lifecycle")?;
     let _lock = LifecycleLock::acquire()?;
@@ -126,13 +131,16 @@ pub(super) fn disable(for_uninstall: bool) -> Result<()> {
     save_state(&state_store, &IntegrationState::Disabled)
 }
 
-pub(super) fn recover_before_invocation() -> Result<bool> {
-    let _lock = LifecycleLock::acquire()?;
+pub(super) fn prepare_invocation() -> Result<InvocationLifecycle> {
+    let lock = LifecycleLock::acquire()?;
     let state_store = state_store()?;
     let state = load_state(&state_store)?;
     let interrupted = matches!(state, IntegrationState::Enabling(_));
     let _recovered = recover_interrupted_enable(&state_store, state)?;
-    Ok(interrupted)
+    Ok(InvocationLifecycle {
+        _lock: lock,
+        recovered_interrupted_enablement: interrupted,
+    })
 }
 
 pub(super) fn prepare_service_start() -> Result<bool> {
@@ -436,5 +444,11 @@ impl LifecycleLock {
         flock(&file, FlockOperation::LockExclusive)
             .context("wait for another lifecycle operation to finish")?;
         Ok(Self { _file: file })
+    }
+}
+
+impl InvocationLifecycle {
+    pub(super) const fn recovered_interrupted_enablement(&self) -> bool {
+        self.recovered_interrupted_enablement
     }
 }

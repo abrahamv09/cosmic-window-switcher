@@ -87,7 +87,8 @@ fn main() -> Result<()> {
         Command::Invoke { direction } => {
             cosmic_session::verify("Window switch invocation")?;
             let direction = direction.into();
-            if lifecycle::recover_before_invocation()? {
+            let lifecycle = lifecycle::prepare_invocation()?;
+            if lifecycle.recovered_interrupted_enablement() {
                 service::fallback(direction)
             } else {
                 service::invoke(direction)

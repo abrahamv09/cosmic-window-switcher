@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::{
-    fs,
+    env, fs,
     path::Path,
     process::Command,
     thread,
@@ -15,6 +15,7 @@ const KEY_BINDINGS_PATH: &str = "cosmic/com.system76.CosmicSettings.Shortcuts/v1
 const LIFECYCLE_PATH: &str = "cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/integration";
 const NEXT_COMMAND: &str = "/usr/bin/cosmic-window-switcher invoke next";
 const PREVIOUS_COMMAND: &str = "/usr/bin/cosmic-window-switcher invoke previous";
+const CONCURRENT_INVOKE_SCENARIO: &str = "COSMIC_WINDOW_SWITCHER_CONCURRENT_INVOKE_SCENARIO";
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_cosmic-window-switcher")
@@ -293,6 +294,73 @@ fn concurrent_lifecycle_commands_serialize_shortcut_and_service_state() {
         fs::read_to_string(lifecycle_file(&sandbox))
             .expect("read serialized lifecycle state")
             .contains("Disabled")
+    );
+}
+
+#[test]
+fn concurrent_enable_and_invocation_cannot_deadlock_service_activation() {
+    if env::var_os(CONCURRENT_INVOKE_SCENARIO).is_none() {
+        let current_test = env::current_exe().expect("resolve lifecycle test executable");
+        let status = Command::new("dbus-run-session")
+            .arg("--")
+            .arg(current_test)
+            .args([
+                "--exact",
+                "concurrent_enable_and_invocation_cannot_deadlock_service_activation",
+                "--nocapture",
+            ])
+            .env(CONCURRENT_INVOKE_SCENARIO, "1")
+            .status()
+            .expect("run concurrency scenario on an isolated session bus");
+        assert!(status.success());
+        return;
+    }
+
+    let sandbox = TempDir::new().expect("create lifecycle sandbox");
+    seed_shortcuts(&sandbox);
+    let barrier = sandbox.path().join("invoke-enable-barrier");
+    let mut enabling = lifecycle_command(&sandbox, "enable");
+    enabling.env("COSMIC_WINDOW_SWITCHER_TEST_ENABLE_BARRIER", &barrier);
+    let mut enabling = enabling.spawn().expect("start paused enablement");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !barrier.with_extension("reached").exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(barrier.with_extension("reached").exists());
+
+    let fallback_log = sandbox.path().join("concurrent-fallback.log");
+    let mut invoking = lifecycle_command(&sandbox, "invoke");
+    invoking
+        .arg("next")
+        .env(
+            "COSMIC_WINDOW_SWITCHER_STOCK_LAUNCHER",
+            fixture("record-stock-launcher.sh"),
+        )
+        .env("COSMIC_WINDOW_SWITCHER_TEST_FALLBACK_LOG", &fallback_log);
+    let mut invoking = invoking.spawn().expect("start concurrent invocation");
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        invoking
+            .try_wait()
+            .expect("inspect concurrent invocation")
+            .is_none(),
+        "invocation bypassed the lifecycle lock"
+    );
+    fs::write(barrier.with_extension("release"), "release\n").expect("release paused enablement");
+
+    assert!(enabling.wait().expect("finish enablement").success());
+    assert!(invoking.wait().expect("finish invocation").success());
+    let configured = fs::read_to_string(shortcut_file(&sandbox)).expect("read enabled commands");
+    assert!(configured.contains(NEXT_COMMAND));
+    assert!(configured.contains(PREVIOUS_COMMAND));
+    assert!(
+        fs::read_to_string(lifecycle_file(&sandbox))
+            .expect("read enabled lifecycle state")
+            .contains("Enabled")
+    );
+    assert_eq!(
+        fs::read_to_string(fallback_log).expect("read concurrent stock fallback"),
+        "alt-tab\n"
     );
 }
 
