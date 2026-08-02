@@ -119,6 +119,103 @@ pub enum ServiceEvent {
     PointerMoved(Option<WindowId>),
     PointerPressed(Option<WindowId>),
     PointerReleased(Option<WindowId>),
+    SessionInterrupted(SessionInterruption),
+    SessionReactivated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionInterruption {
+    ScreenLock,
+    Suspend,
+    UserSwitch,
+    OutputLoss,
+    CompositorLoss,
+    SessionShutdown,
+}
+
+impl SessionInterruption {
+    #[must_use]
+    const fn pauses_session(self) -> bool {
+        !matches!(self, Self::OutputLoss)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionLifecycleSignal {
+    Locked(bool),
+    Active(bool),
+    PreparingForSleep(bool),
+    PreparingForShutdown(bool),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SessionLifecycleModel {
+    boundaries: u8,
+    interruption: Option<SessionInterruption>,
+}
+
+impl SessionLifecycleModel {
+    const INACTIVE: u8 = 1;
+    const LOCKED: u8 = 1 << 1;
+    const PREPARING_FOR_SLEEP: u8 = 1 << 2;
+    const PREPARING_FOR_SHUTDOWN: u8 = 1 << 3;
+
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            boundaries: 0,
+            interruption: None,
+        }
+    }
+
+    pub fn handle(&mut self, signal: SessionLifecycleSignal) -> Option<ServiceEvent> {
+        match signal {
+            SessionLifecycleSignal::Locked(locked) => self.set_boundary(Self::LOCKED, locked),
+            SessionLifecycleSignal::Active(active) => self.set_boundary(Self::INACTIVE, !active),
+            SessionLifecycleSignal::PreparingForSleep(preparing) => {
+                self.set_boundary(Self::PREPARING_FOR_SLEEP, preparing);
+            }
+            SessionLifecycleSignal::PreparingForShutdown(preparing) => {
+                self.set_boundary(Self::PREPARING_FOR_SHUTDOWN, preparing);
+            }
+        }
+
+        let next = if self.has_boundary(Self::PREPARING_FOR_SHUTDOWN) {
+            Some(SessionInterruption::SessionShutdown)
+        } else if self.has_boundary(Self::PREPARING_FOR_SLEEP) {
+            Some(SessionInterruption::Suspend)
+        } else if self.has_boundary(Self::LOCKED) {
+            Some(SessionInterruption::ScreenLock)
+        } else if self.has_boundary(Self::INACTIVE) {
+            Some(SessionInterruption::UserSwitch)
+        } else {
+            None
+        };
+        let previous = std::mem::replace(&mut self.interruption, next);
+        match (previous, next) {
+            (None, Some(interruption)) => Some(ServiceEvent::SessionInterrupted(interruption)),
+            (Some(_), None) => Some(ServiceEvent::SessionReactivated),
+            (None, None) | (Some(_), Some(_)) => None,
+        }
+    }
+
+    fn set_boundary(&mut self, boundary: u8, asserted: bool) {
+        if asserted {
+            self.boundaries |= boundary;
+        } else {
+            self.boundaries &= !boundary;
+        }
+    }
+
+    const fn has_boundary(self, boundary: u8) -> bool {
+        self.boundaries & boundary != 0
+    }
+}
+
+impl Default for SessionLifecycleModel {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1734,14 +1831,16 @@ impl ActiveSession {
             | ServiceEvent::RevealDelayElapsed
             | ServiceEvent::HoldModifiersChanged(_)
             | ServiceEvent::Switching(_)
-            | ServiceEvent::Invocation(_) => {
+            | ServiceEvent::Invocation(_)
+            | ServiceEvent::SessionInterrupted(_)
+            | ServiceEvent::SessionReactivated => {
                 unreachable!("only pointer events are passed to the pointer handler")
             }
         }
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct SwitcherService {
     windows: Vec<TrackedWindow>,
     initial_discovery_complete: bool,
@@ -1749,6 +1848,13 @@ pub struct SwitcherService {
     window_scope: WindowScope,
     workspace_eligibility: WorkspaceEligibilityState,
     capture_backend: CaptureBackendState,
+    session_active: bool,
+}
+
+impl Default for SwitcherService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SwitcherService {
@@ -1761,6 +1867,7 @@ impl SwitcherService {
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
             capture_backend: CaptureBackendState::NotNegotiated,
+            session_active: true,
         }
     }
 
@@ -1806,6 +1913,9 @@ impl SwitcherService {
     }
 
     pub fn observe(&mut self, event: WindowEvent) -> Vec<ServiceEffect> {
+        if !self.session_active {
+            return Vec::new();
+        }
         let closed = match &event {
             WindowEvent::Closed(id) => Some(id.clone()),
             _ => None,
@@ -1860,6 +1970,9 @@ impl SwitcherService {
         request: InvocationRequest,
         windows: impl IntoIterator<Item = WindowId>,
     ) -> Vec<ServiceEffect> {
+        if !self.session_active {
+            return Vec::new();
+        }
         let Ok(session) =
             SwitchingSession::new(windows, request.direction, request.initial_hold_modifiers)
         else {
@@ -1879,6 +1992,25 @@ impl SwitcherService {
     }
 
     pub fn handle(&mut self, event: ServiceEvent) -> Vec<ServiceEffect> {
+        match event {
+            ServiceEvent::SessionInterrupted(interruption) => {
+                let had_active_session = self.active_session.take().is_some();
+                if interruption.pauses_session() {
+                    self.session_active = false;
+                    self.windows.clear();
+                    self.initial_discovery_complete = false;
+                }
+                return had_active_session
+                    .then_some(ServiceEffect::Cancel)
+                    .into_iter()
+                    .collect();
+            }
+            ServiceEvent::SessionReactivated => {
+                self.session_active = true;
+                return Vec::new();
+            }
+            _ => {}
+        }
         if self.active_session.is_none() {
             return Vec::new();
         }
@@ -1944,6 +2076,9 @@ impl SwitcherService {
                 self.apply_active_session_event(|active_session| {
                     active_session.handle_pointer_event(event)
                 })
+            }
+            ServiceEvent::SessionInterrupted(_) | ServiceEvent::SessionReactivated => {
+                unreachable!("lifecycle events returned before active-session dispatch")
             }
         }
     }

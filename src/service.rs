@@ -18,49 +18,51 @@ mod diagnostics;
 mod icons;
 mod invocation;
 mod overlay;
+mod session_lifecycle;
 mod window_observer;
 
 type SharedService = Arc<RwLock<SwitcherService>>;
-type PendingInvocations = Arc<InvocationQueue>;
+type PendingInvocations = Arc<WakeQueue<InvocationDirection>>;
+type PendingLifecycleEvents = Arc<WakeQueue<cosmic_window_switcher::ServiceEvent>>;
 
-struct InvocationQueue {
-    directions: Mutex<VecDeque<InvocationDirection>>,
+struct WakeQueue<T> {
+    values: Mutex<VecDeque<T>>,
     wake: OwnedFd,
 }
 
-impl InvocationQueue {
+impl<T> WakeQueue<T> {
     fn new() -> Result<Self> {
         let wake = eventfd(
             0,
             EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK | EventfdFlags::SEMAPHORE,
         )
-        .context("create the invocation wake event")?;
+        .context("create the service wake event")?;
         Ok(Self {
-            directions: Mutex::new(VecDeque::new()),
+            values: Mutex::new(VecDeque::new()),
             wake,
         })
     }
 
-    fn push(&self, direction: InvocationDirection) {
-        let mut directions = self
-            .directions
+    fn push(&self, value: T) {
+        let mut values = self
+            .values
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        directions.push_back(direction);
+        values.push_back(value);
         let _wake_result = rustix::io::write(&self.wake, &1_u64.to_ne_bytes());
     }
 
-    fn pop(&self) -> Option<InvocationDirection> {
-        let mut directions = self
-            .directions
+    fn pop(&self) -> Option<T> {
+        let mut values = self
+            .values
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let direction = directions.pop_front();
-        if direction.is_some() {
+        let value = values.pop_front();
+        if value.is_some() {
             let mut value = [0_u8; size_of::<u64>()];
             let _wake_result = rustix::io::read(&self.wake, &mut value);
         }
-        direction
+        value
     }
 
     fn wake_fd(&self) -> BorrowedFd<'_> {
@@ -68,11 +70,11 @@ impl InvocationQueue {
     }
 
     fn has_pending(&self) -> bool {
-        let directions = self
-            .directions
+        let values = self
+            .values
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        !directions.is_empty()
+        !values.is_empty()
     }
 }
 
@@ -84,15 +86,23 @@ pub fn run() -> Result<()> {
     crate::cosmic_session::verify("Switcher Service")?;
 
     let service = Arc::new(RwLock::new(SwitcherService::new()));
-    let pending_invocations = Arc::new(InvocationQueue::new()?);
+    let pending_invocations = Arc::new(WakeQueue::new()?);
+    let pending_lifecycle_events = Arc::new(WakeQueue::new()?);
+    let _lifecycle_monitor = session_lifecycle::monitor(Arc::clone(&pending_lifecycle_events))?;
     let _bus_connection =
         diagnostics::serve(Arc::clone(&service), Arc::clone(&pending_invocations))?;
-    let mut window_observer =
-        window_observer::WindowObserver::connect(Arc::clone(&service), pending_invocations)?;
+    let mut window_observer = window_observer::WindowObserver::connect(
+        Arc::clone(&service),
+        pending_invocations,
+        pending_lifecycle_events,
+    )?;
     window_observer.synchronize_initial_windows()?;
 
     loop {
-        window_observer.dispatch()?;
+        if let Err(error) = window_observer.dispatch() {
+            window_observer.compositor_lost();
+            return Err(error);
+        }
     }
 }
 

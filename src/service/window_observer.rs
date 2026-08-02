@@ -58,14 +58,14 @@ use cosmic_window_switcher::{
     CaptureOpportunity, CaptureSessionModel, DesktopSnapshot, DmaBufFallbackReason,
     FractionalScale, GridLayout, GridNavigationDirection, HoldModifiers, InvocationDirection,
     InvocationRequest, Locale, OverlayPresentation, PreferencesStore, REVEAL_ANIMATION_DURATION,
-    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences,
-    ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent,
-    WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot,
-    WorkspaceId, WorkspaceSnapshot,
+    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SessionInterruption,
+    SessionPreferences, ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent,
+    WindowEvent, WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState,
+    WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 use super::{
-    PendingInvocations, SharedService,
+    PendingInvocations, PendingLifecycleEvents, SharedService,
     accessibility::AccessibilityBridge,
     invocation,
     overlay::{OverlayDimensions, OverlayRenderer, RenderedOverlay},
@@ -105,6 +105,20 @@ fn advertised_cosmic_versions(globals: &GlobalList) -> (Option<u32>, Option<u32>
         advertised_global_version(globals, TOPLEVEL_INFO_INTERFACE),
         advertised_global_version(globals, WORKSPACE_MANAGER_INTERFACE),
     )
+}
+
+fn normalize_wayland_read(
+    result: Result<usize, wayland_client::backend::WaylandError>,
+) -> Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(wayland_client::backend::WaylandError::Io(error))
+            if error.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error).context("read COSMIC Window events"),
+    }
 }
 
 fn cosmic_accessibility_policy() -> AccessibilityPolicy {
@@ -172,6 +186,7 @@ pub(super) struct WindowObserver {
     event_queue: EventQueue<ProtocolObserver>,
     state: ProtocolObserver,
     pending_invocations: PendingInvocations,
+    pending_lifecycle_events: PendingLifecycleEvents,
 }
 
 fn publish_capture_backend(service: &SharedService) {
@@ -186,10 +201,20 @@ fn publish_capture_backend(service: &SharedService) {
         ));
 }
 
+fn capture_backend(
+    globals: &GlobalList,
+    queue_handle: &QueueHandle<ProtocolObserver>,
+    service: &SharedService,
+) -> ShmCaptureState {
+    publish_capture_backend(service);
+    ShmCaptureState::new(globals, queue_handle)
+}
+
 impl WindowObserver {
     pub(super) fn connect(
         service: SharedService,
         pending_invocations: PendingInvocations,
+        pending_lifecycle_events: PendingLifecycleEvents,
     ) -> Result<Self> {
         let connection = Connection::connect_to_env().context("connect to Wayland")?;
         let (globals, event_queue) =
@@ -213,8 +238,7 @@ impl WindowObserver {
         let viewporter = registry_state
             .bind_one::<wp_viewporter::WpViewporter, _, _>(&queue_handle, 1..=1, ())
             .ok();
-        let capture_backend = ShmCaptureState::new(&globals, &queue_handle);
-        publish_capture_backend(&service);
+        let capture_backend = capture_backend(&globals, &queue_handle, &service);
         let foreign_toplevel_list = registry_state
             .bind_one::<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
                 &queue_handle,
@@ -290,6 +314,7 @@ impl WindowObserver {
             event_queue,
             state,
             pending_invocations,
+            pending_lifecycle_events,
         })
     }
 
@@ -317,6 +342,10 @@ impl WindowObserver {
         Ok(())
     }
 
+    pub(super) fn compositor_lost(&mut self) {
+        self.state.interrupt(SessionInterruption::CompositorLoss);
+    }
+
     pub(super) fn dispatch(&mut self) -> Result<()> {
         let queue_handle = self.event_queue.handle();
         self.event_queue
@@ -331,6 +360,7 @@ impl WindowObserver {
         };
         let fd = read_guard.connection_fd();
         let invocation_fd = self.pending_invocations.wake_fd();
+        let lifecycle_fd = self.pending_lifecycle_events.wake_fd();
         let mut poll_fds = [
             rustix::event::PollFd::new(
                 &fd,
@@ -340,14 +370,24 @@ impl WindowObserver {
                 &invocation_fd,
                 rustix::event::PollFlags::IN | rustix::event::PollFlags::ERR,
             ),
+            rustix::event::PollFd::new(
+                &lifecycle_fd,
+                rustix::event::PollFlags::IN | rustix::event::PollFlags::ERR,
+            ),
         ];
         let timeout = self.state.poll_timeout().map(duration_to_timespec);
         rustix::event::poll(&mut poll_fds, timeout.as_ref()).context("poll COSMIC events")?;
+        while let Some(event) = self.pending_lifecycle_events.pop() {
+            self.state.handle_lifecycle_event(&event);
+        }
         if poll_fds[0]
             .revents()
             .intersects(rustix::event::PollFlags::IN | rustix::event::PollFlags::ERR)
         {
-            read_guard.read().context("read COSMIC Window events")?;
+            if let Err(error) = normalize_wayland_read(read_guard.read()) {
+                self.state.interrupt(SessionInterruption::CompositorLoss);
+                return Err(error);
+            }
         } else {
             drop(read_guard);
         }
@@ -468,6 +508,39 @@ struct ProtocolObserver {
 }
 
 impl ProtocolObserver {
+    fn handle_lifecycle_event(&mut self, event: &ServiceEvent) {
+        match event {
+            ServiceEvent::SessionInterrupted(interruption) => self.interrupt(*interruption),
+            ServiceEvent::SessionReactivated => self.rebuild_after_reactivation(),
+            _ => unreachable!("only lifecycle events are queued by the lifecycle observer"),
+        }
+    }
+
+    fn interrupt(&mut self, interruption: SessionInterruption) {
+        let effects = self
+            .service
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .handle(ServiceEvent::SessionInterrupted(interruption));
+        self.apply_effects(effects);
+        self.destroy_overlay();
+    }
+
+    fn rebuild_after_reactivation(&mut self) {
+        let snapshot = self.observations.snapshot_events();
+        let workspace_eligibility = self.workspace_eligibility_state();
+        let mut service = self
+            .service
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _effects = service.handle(ServiceEvent::SessionReactivated);
+        service.set_workspace_eligibility_state(workspace_eligibility);
+        for event in snapshot {
+            let _effects = service.observe(event);
+        }
+        service.complete_initial_discovery();
+    }
+
     fn apply(&mut self, event: Observation) {
         let closed = match &event {
             Observation::Closed(key) => self.observations.window_id(*key).cloned(),
@@ -1436,8 +1509,11 @@ impl OutputHandler for ProtocolObserver {
         &mut self,
         _connection: &Connection,
         _queue_handle: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
+        output: wl_output::WlOutput,
     ) {
+        if self.session_output.as_ref() == Some(&output) {
+            self.interrupt(SessionInterruption::OutputLoss);
+        }
     }
 }
 
@@ -1448,10 +1524,8 @@ impl LayerShellHandler for ProtocolObserver {
         _queue_handle: &QueueHandle<Self>,
         layer: &LayerSurface,
     ) {
-        if self.layer.as_ref() == Some(layer)
-            && let Some(direction) = self.pending_direction
-        {
-            self.fallback(direction);
+        if self.layer.as_ref() == Some(layer) {
+            self.interrupt(SessionInterruption::OutputLoss);
         }
     }
 
@@ -1931,6 +2005,24 @@ struct ObservationLedger {
 }
 
 impl ObservationLedger {
+    fn snapshot_events(&self) -> Vec<WindowEvent> {
+        let mut events = self
+            .windows
+            .iter()
+            .filter(|window| window.registered)
+            .filter_map(|window| window.id.clone())
+            .map(WindowEvent::Discovered)
+            .collect::<Vec<_>>();
+        events.extend(
+            self.windows
+                .iter()
+                .filter(|window| window.registered && window.activated)
+                .filter_map(|window| window.id.clone())
+                .map(WindowEvent::Activated),
+        );
+        events
+    }
+
     fn window_id(&self, key: ObservationKey) -> Option<&WindowId> {
         self.windows
             .iter()
@@ -2288,6 +2380,7 @@ delegate_noop!(ProtocolObserver: ignore wp_viewporter::WpViewporter);
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::sync::{Arc, RwLock};
 
     use cosmic_window_switcher::{
@@ -2296,7 +2389,26 @@ mod tests {
     };
     use smithay_client_toolkit::seat::keyboard::Keysym;
 
-    use super::{Observation, ObservationKey, ObservationLedger, grid_navigation_direction};
+    use super::{
+        Observation, ObservationKey, ObservationLedger, grid_navigation_direction,
+        normalize_wayland_read,
+    };
+
+    #[test]
+    fn event_loop_retries_a_nonblocking_wayland_read_after_poll_readiness() {
+        assert!(
+            normalize_wayland_read(Err(wayland_client::backend::WaylandError::Io(
+                io::Error::from(io::ErrorKind::WouldBlock)
+            )))
+            .is_ok()
+        );
+        assert!(
+            normalize_wayland_read(Err(wayland_client::backend::WaylandError::Io(
+                io::Error::from(io::ErrorKind::ConnectionReset)
+            )))
+            .is_err()
+        );
+    }
 
     #[test]
     fn arrow_keysyms_map_to_spatial_grid_directions() {

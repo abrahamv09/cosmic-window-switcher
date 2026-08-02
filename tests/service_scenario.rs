@@ -3,7 +3,8 @@
 use cosmic_window_switcher::{
     CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, GridNavigationDirection,
     HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect,
-    ServiceEvent, SessionDisplay, SwitcherGrid, SwitcherItem, SwitcherService, SwitchingEvent,
+    ServiceEvent, SessionDisplay, SessionInterruption, SessionLifecycleModel,
+    SessionLifecycleSignal, SwitcherGrid, SwitcherItem, SwitcherService, SwitchingEvent,
     WindowEvent, WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState,
     WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
@@ -136,6 +137,125 @@ fn losing_the_selected_window_advances_to_the_next_surviving_window() {
     assert_eq!(
         service.handle(ServiceEvent::HoldModifiersChanged(HoldModifiers::empty())),
         vec![ServiceEffect::Activate(window("next-survivor"))]
+    );
+}
+
+#[test]
+fn every_desktop_interruption_cancels_without_activating_and_discards_session_state() {
+    for interruption in [
+        SessionInterruption::ScreenLock,
+        SessionInterruption::Suspend,
+        SessionInterruption::UserSwitch,
+        SessionInterruption::OutputLoss,
+        SessionInterruption::CompositorLoss,
+        SessionInterruption::SessionShutdown,
+    ] {
+        let mut service = service_with_mru_order(&["focused", "selected", "survivor"]);
+        service.invoke(InvocationRequest {
+            direction: InvocationDirection::Next,
+            initial_hold_modifiers: HoldModifiers::ALT,
+        });
+        service.handle(ServiceEvent::SessionReady);
+
+        assert_eq!(
+            service.handle(ServiceEvent::SessionInterrupted(interruption)),
+            vec![ServiceEffect::Cancel],
+            "{interruption:?}"
+        );
+        assert_eq!(
+            service.handle(ServiceEvent::HoldModifiersChanged(HoldModifiers::empty())),
+            Vec::<ServiceEffect>::new(),
+            "{interruption:?} must not resurrect or activate the old selection"
+        );
+    }
+}
+
+#[test]
+fn mru_observation_pauses_while_the_cosmic_session_is_inactive_and_rebuilds_after_resume() {
+    let mut service = service_with_mru_order(&["focused", "previous"]);
+
+    service.handle(ServiceEvent::SessionInterrupted(
+        SessionInterruption::ScreenLock,
+    ));
+    service.observe(WindowEvent::Activated(window("previous")));
+    assert!(service.diagnostics().mru_order.is_empty());
+    assert!(
+        service
+            .invoke(InvocationRequest {
+                direction: InvocationDirection::Next,
+                initial_hold_modifiers: HoldModifiers::ALT,
+            })
+            .is_empty()
+    );
+
+    service.handle(ServiceEvent::SessionReactivated);
+    service.observe(WindowEvent::Discovered(window("focused-after-resume")));
+    service.observe(WindowEvent::Discovered(window("previous-after-resume")));
+    service.observe(WindowEvent::Activated(window("focused-after-resume")));
+    service.complete_initial_discovery();
+
+    assert_eq!(
+        service.diagnostics().mru_order,
+        vec![
+            window("focused-after-resume"),
+            window("previous-after-resume")
+        ]
+    );
+}
+
+#[test]
+fn output_loss_preserves_mru_observation_for_the_still_active_cosmic_session() {
+    let mut service = service_with_mru_order(&["focused", "previous"]);
+
+    service.handle(ServiceEvent::SessionInterrupted(
+        SessionInterruption::OutputLoss,
+    ));
+    service.observe(WindowEvent::Activated(window("previous")));
+
+    assert_eq!(
+        service.diagnostics().mru_order,
+        vec![window("previous"), window("focused")]
+    );
+}
+
+#[test]
+fn lifecycle_sources_cannot_reactivate_until_every_privacy_boundary_clears() {
+    let mut lifecycle = SessionLifecycleModel::new();
+
+    assert_eq!(
+        lifecycle.handle(SessionLifecycleSignal::Locked(true)),
+        Some(ServiceEvent::SessionInterrupted(
+            SessionInterruption::ScreenLock
+        ))
+    );
+    assert_eq!(
+        lifecycle.handle(SessionLifecycleSignal::PreparingForSleep(true)),
+        None
+    );
+    assert_eq!(
+        lifecycle.handle(SessionLifecycleSignal::PreparingForSleep(false)),
+        None,
+        "unlock is still required after resume"
+    );
+    assert_eq!(
+        lifecycle.handle(SessionLifecycleSignal::Locked(false)),
+        Some(ServiceEvent::SessionReactivated)
+    );
+    assert_eq!(
+        lifecycle.handle(SessionLifecycleSignal::Active(false)),
+        Some(ServiceEvent::SessionInterrupted(
+            SessionInterruption::UserSwitch
+        ))
+    );
+    assert_eq!(
+        lifecycle.handle(SessionLifecycleSignal::Active(true)),
+        Some(ServiceEvent::SessionReactivated)
+    );
+    assert_eq!(
+        lifecycle.handle(SessionLifecycleSignal::PreparingForShutdown(true)),
+        Some(ServiceEvent::SessionInterrupted(
+            SessionInterruption::SessionShutdown
+        ))
     );
 }
 
