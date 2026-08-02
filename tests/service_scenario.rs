@@ -50,24 +50,36 @@ enum InterruptionPoint {
 
 struct FakeSessionResources {
     backend: CaptureBackend,
-    overlay_surfaces: usize,
-    input_grabs: usize,
-    capture_sessions: usize,
-    outstanding_frames: usize,
-    imported_buffers: usize,
-    last_frame_references: usize,
+    resources: Vec<FakeResource>,
+}
+
+#[derive(Clone, Copy)]
+enum FakeResource {
+    OverlaySurface,
+    InputGrab,
+    CaptureSession,
+    OutstandingFrame,
+    ImportedDmaBuf,
+    SharedMemoryBuffer,
+    LastFrameReference,
 }
 
 impl FakeSessionResources {
     fn allocated(backend: CaptureBackend) -> Self {
+        let backend_buffer = match backend {
+            CaptureBackend::DmaBuf => FakeResource::ImportedDmaBuf,
+            CaptureBackend::SharedMemory => FakeResource::SharedMemoryBuffer,
+        };
         Self {
             backend,
-            overlay_surfaces: 1,
-            input_grabs: 1,
-            capture_sessions: 2,
-            outstanding_frames: 2,
-            imported_buffers: 2,
-            last_frame_references: 2,
+            resources: vec![
+                FakeResource::OverlaySurface,
+                FakeResource::InputGrab,
+                FakeResource::CaptureSession,
+                FakeResource::OutstandingFrame,
+                backend_buffer,
+                FakeResource::LastFrameReference,
+            ],
         }
     }
 
@@ -78,26 +90,13 @@ impl FakeSessionResources {
                 ServiceEffect::Cancel | ServiceEffect::FallbackToStockSwitcher(_)
             )
         }) {
-            self.overlay_surfaces = 0;
-            self.input_grabs = 0;
-            self.capture_sessions = 0;
-            self.outstanding_frames = 0;
-            self.imported_buffers = 0;
-            self.last_frame_references = 0;
+            self.resources.clear();
         }
     }
 
     fn assert_released(&self, interruption: SessionInterruption, point: InterruptionPoint) {
-        assert_eq!(
-            [
-                self.overlay_surfaces,
-                self.input_grabs,
-                self.capture_sessions,
-                self.outstanding_frames,
-                self.imported_buffers,
-                self.last_frame_references,
-            ],
-            [0; 6],
+        assert!(
+            self.resources.is_empty(),
             "{interruption:?} at {point:?} with {}",
             self.backend.diagnostic_name()
         );
