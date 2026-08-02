@@ -42,7 +42,7 @@ supported.
 ## Installation
 
 Download the `.deb` and checksum files from the
-[latest GitHub release](https://github.com/abrahamv09/pop-os-app-switcher/releases/latest).
+[latest GitHub release](https://github.com/abrahamv09/cosmic-window-switcher/releases/latest).
 
 Verify the downloaded files when using a signed release:
 
@@ -111,8 +111,8 @@ The project requires Rust 1.95 or newer and the system dependencies listed in
 [`debian/control`](debian/control).
 
 ```sh
-git clone https://github.com/abrahamv09/pop-os-app-switcher.git
-cd pop-os-app-switcher
+git clone https://github.com/abrahamv09/cosmic-window-switcher.git
+cd cosmic-window-switcher
 cargo build --release
 ```
 
