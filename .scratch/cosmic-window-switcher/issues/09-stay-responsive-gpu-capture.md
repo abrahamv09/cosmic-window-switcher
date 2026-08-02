@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Show Live Thumbnails through shared memory; 08 — Configure an accessible bilingual experience.
 
-**Status:** ready-for-human
+**Status:** resolved
 
 - [x] DMA-BUF is selected only when device, formats, modifiers, allocation, synchronization, import, and release behavior are mutually compatible.
 - [x] Any incompatible or failed DMA-BUF negotiation falls back to SHM automatically without requiring a user preference.
@@ -12,8 +12,8 @@
 - [x] Scheduling prioritizes keyboard and pointer input, then the selected thumbnail, then fair round-robin work for other visible items.
 - [x] The user-selected Refresh Ceiling is treated as a maximum for changed content, not a guaranteed duplicate-frame rate.
 - [x] The idle service performs no capture and has effectively zero sustained capture CPU use.
-- [ ] On the development baseline, selection responds within one display frame and the visible overlay is ready within 50 ms after its configured delay.
-- [ ] Ten visible Windows remain smooth at the default ceiling without input stalls, and overload recovers automatically.
+- [x] On the development baseline, selection responds within one display frame and the visible overlay is ready within 50 ms after its configured delay. Human acceptance granted after live visual validation; instrumented timing was waived.
+- [x] Ten visible Windows remain smooth at the default ceiling without input stalls, and overload recovers automatically. Human acceptance granted after live load validation; exact test dimensions were not recorded.
 
 ## Comments
 
@@ -80,3 +80,19 @@
 - Overflow discovery is symmetric: when selection scrolls toward later rows,
   the preceding row peeks into the top of the Grid Viewport by half, just as a
   following row peeks into the bottom when selection is near the beginning.
+- Final human acceptance was granted on 2026-08-02 after live responsiveness,
+  navigation, adaptive-layout, and Live Thumbnail validation. The user directed
+  the ticket to be resolved without an instrumented frame-time capture. The
+  screenshot-gray observation is limited to leaving a Latch Mode overlay open
+  while another compositor interface takes over and does not block the normal
+  production Hold Mode path.
+
+## Answer
+
+The Switcher Service now negotiates the complete DMA-BUF compatibility
+contract and falls back truthfully to SHM when the software renderer cannot
+import DMA-BUF. Input-first scheduling prioritizes selection and fairly updates
+other visible Live Thumbnails without duplicate unchanged frames or idle work.
+Human validation accepted the final responsive behavior, including adaptive
+one-to-five-column layout, symmetric overflow discovery, compact metadata, and
+continuous keyboard navigation.
