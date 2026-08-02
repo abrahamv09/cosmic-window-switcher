@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, GridNavigationDirection,
-    HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect,
-    ServiceEvent, SessionDisplay, SessionInterruption, SessionLifecycleModel,
+    CaptureBackend, CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot,
+    GridNavigationDirection, HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling,
+    ServiceEffect, ServiceEvent, SessionDisplay, SessionInterruption, SessionLifecycleModel,
     SessionLifecycleSignal, SwitcherGrid, SwitcherItem, SwitcherService, SwitchingEvent,
     WindowEvent, WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState,
     WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
@@ -39,6 +39,68 @@ impl FakePresentationAdapter {
         let layout = self.grid.layout(760, 548, CardSize::Medium);
         self.captures
             .set_visible(self.grid.visible_windows(&layout))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InterruptionPoint {
+    Preparing,
+    Revealed,
+}
+
+struct FakeSessionResources {
+    backend: CaptureBackend,
+    overlay_surfaces: usize,
+    input_grabs: usize,
+    capture_sessions: usize,
+    outstanding_frames: usize,
+    imported_buffers: usize,
+    last_frame_references: usize,
+}
+
+impl FakeSessionResources {
+    fn allocated(backend: CaptureBackend) -> Self {
+        Self {
+            backend,
+            overlay_surfaces: 1,
+            input_grabs: 1,
+            capture_sessions: 2,
+            outstanding_frames: 2,
+            imported_buffers: 2,
+            last_frame_references: 2,
+        }
+    }
+
+    fn apply(&mut self, effects: &[ServiceEffect]) {
+        if effects.iter().any(|effect| {
+            matches!(
+                effect,
+                ServiceEffect::Cancel | ServiceEffect::FallbackToStockSwitcher(_)
+            )
+        }) {
+            self.overlay_surfaces = 0;
+            self.input_grabs = 0;
+            self.capture_sessions = 0;
+            self.outstanding_frames = 0;
+            self.imported_buffers = 0;
+            self.last_frame_references = 0;
+        }
+    }
+
+    fn assert_released(&self, interruption: SessionInterruption, point: InterruptionPoint) {
+        assert_eq!(
+            [
+                self.overlay_surfaces,
+                self.input_grabs,
+                self.capture_sessions,
+                self.outstanding_frames,
+                self.imported_buffers,
+                self.last_frame_references,
+            ],
+            [0; 6],
+            "{interruption:?} at {point:?} with {}",
+            self.backend.diagnostic_name()
+        );
     }
 }
 
@@ -141,33 +203,44 @@ fn losing_the_selected_window_advances_to_the_next_surviving_window() {
 }
 
 #[test]
-fn every_desktop_interruption_cancels_without_activating_and_discards_session_state() {
-    for interruption in [
-        SessionInterruption::ScreenLock,
-        SessionInterruption::Suspend,
-        SessionInterruption::UserSwitch,
-        SessionInterruption::OutputLoss,
-        SessionInterruption::CompositorLoss,
-        SessionInterruption::SessionShutdown,
-    ] {
-        let mut service = service_with_mru_order(&["focused", "selected", "survivor"]);
-        service.invoke(InvocationRequest {
-            direction: InvocationDirection::Next,
-            initial_hold_modifiers: HoldModifiers::ALT,
-        });
-        service.handle(ServiceEvent::SessionReady);
-        service.handle(ServiceEvent::RevealDelayElapsed);
+fn every_interruption_point_releases_every_resource_for_each_capture_backend() {
+    for backend in [CaptureBackend::DmaBuf, CaptureBackend::SharedMemory] {
+        for point in [InterruptionPoint::Preparing, InterruptionPoint::Revealed] {
+            for interruption in [
+                SessionInterruption::ScreenLock,
+                SessionInterruption::Suspend,
+                SessionInterruption::UserSwitch,
+                SessionInterruption::OutputLoss,
+                SessionInterruption::CompositorLoss,
+                SessionInterruption::SessionShutdown,
+            ] {
+                let mut service = service_with_mru_order(&["focused", "selected", "survivor"]);
+                service.invoke(InvocationRequest {
+                    direction: InvocationDirection::Next,
+                    initial_hold_modifiers: HoldModifiers::ALT,
+                });
+                if matches!(point, InterruptionPoint::Revealed) {
+                    service.handle(ServiceEvent::SessionReady);
+                    service.handle(ServiceEvent::RevealDelayElapsed);
+                }
+                let mut resources = FakeSessionResources::allocated(backend);
 
-        assert_eq!(
-            service.handle(ServiceEvent::SessionInterrupted(interruption)),
-            vec![ServiceEffect::Cancel],
-            "{interruption:?}"
-        );
-        assert_eq!(
-            service.handle(ServiceEvent::HoldModifiersChanged(HoldModifiers::empty())),
-            Vec::<ServiceEffect>::new(),
-            "{interruption:?} must not resurrect or activate the old selection"
-        );
+                let effects = service.handle(ServiceEvent::SessionInterrupted(interruption));
+                assert!(
+                    !effects
+                        .iter()
+                        .any(|effect| matches!(effect, ServiceEffect::Activate(_))),
+                    "{interruption:?} at {point:?}"
+                );
+                resources.apply(&effects);
+                resources.assert_released(interruption, point);
+                assert_eq!(
+                    service.handle(ServiceEvent::HoldModifiersChanged(HoldModifiers::empty())),
+                    Vec::<ServiceEffect>::new(),
+                    "{interruption:?} must not resurrect or activate the old selection"
+                );
+            }
+        }
     }
 }
 
