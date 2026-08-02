@@ -141,9 +141,12 @@ The default Refresh Ceiling is 30 FPS, unchanged Windows do not produce
 duplicate frames, and a stream never has more than one request outstanding.
 Rows outside the Grid Viewport release their capture streams.
 
-The grid keeps the selected fixed-size card preset as Window counts grow and
-uses fractional-scale surface hints to render a correctly sized buffer without
-changing logical card geometry. Pointer entry after reveal is inert until the
+The grid adapts card geometry to the Window count and available display height.
+One through five Windows occupy one row, six use two rows of three, and larger
+sets use rows of at most five. When more than two rows exist, two complete rows
+and half of the adjacent overflow row remain visible. The selected Card Size
+preset scales this geometry, and fractional-scale surface hints produce the
+correct buffer dimensions. Pointer entry after reveal is inert until the
 pointer moves; motion over a card selects it. A primary-button click activates
 only when press and release complete on the same card, while a completed click
 on the dimmed background cancels without activating a Window.
@@ -155,9 +158,10 @@ only that Switcher Item to its icon-and-title card. Native Wayland Windows and
 compositor-managed XWayland Windows use the same capture path. The same names,
 positions, focus, and selected state are exposed to assistive technology
 through AT-SPI. `Tab` moves forward, `Shift+Tab` moves backward, and both
-directions wrap. Arrow keys move spatially between cards without crossing a
-grid edge. The grid remains above fullscreen content without changing the
-selected Window's fullscreen state. Closed Windows disappear without
+directions wrap. Left and Right follow the continuous row order, including
+crossing between rows; Up and Down retain the current visual column. The grid
+remains above fullscreen content without changing the selected Window's
+fullscreen state. Closed Windows disappear without
 reordering survivors, while Windows opened during switching wait for the next
 Switching Session. When all rows do not fit, rendering follows the selected row
 so it remains visible.

@@ -137,7 +137,7 @@ fn enter_activates_the_selected_window_in_latch_mode() {
 }
 
 #[test]
-fn arrow_navigation_moves_spatially_without_crossing_grid_edges() {
+fn horizontal_arrows_follow_continuous_row_order_and_vertical_arrows_stay_spatial() {
     let mut session = SwitchingSession::new(
         (0..7).map(|index| WindowId::from(format!("window-{index}"))),
         InvocationDirection::Next,
@@ -158,35 +158,35 @@ fn arrow_navigation_moves_spatially_without_crossing_grid_edges() {
             direction: GridNavigationDirection::Right,
             columns: 3,
         }),
-        SessionEffect::None
+        SessionEffect::SelectionChanged(WindowId::from("window-3"))
     );
     assert_eq!(
         session.handle(SwitchingEvent::NavigateGrid {
             direction: GridNavigationDirection::Down,
             columns: 3,
         }),
-        SessionEffect::SelectionChanged(WindowId::from("window-5"))
-    );
-    assert_eq!(
-        session.handle(SwitchingEvent::NavigateGrid {
-            direction: GridNavigationDirection::Down,
-            columns: 3,
-        }),
-        SessionEffect::None
+        SessionEffect::SelectionChanged(WindowId::from("window-6"))
     );
     assert_eq!(
         session.handle(SwitchingEvent::NavigateGrid {
             direction: GridNavigationDirection::Left,
             columns: 3,
         }),
-        SessionEffect::SelectionChanged(WindowId::from("window-4"))
+        SessionEffect::SelectionChanged(WindowId::from("window-5"))
     );
     assert_eq!(
         session.handle(SwitchingEvent::NavigateGrid {
             direction: GridNavigationDirection::Up,
             columns: 3,
         }),
-        SessionEffect::SelectionChanged(WindowId::from("window-1"))
+        SessionEffect::SelectionChanged(WindowId::from("window-2"))
+    );
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Right,
+            columns: 3,
+        }),
+        SessionEffect::SelectionChanged(WindowId::from("window-3"))
     );
 }
 

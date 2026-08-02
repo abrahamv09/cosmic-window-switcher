@@ -164,8 +164,8 @@ impl OverlayRenderer {
     ) {
         let (scale, font_scale) = scale;
         let (item_width, item_height) = bounds.size();
-        let x = scale.physical_length(bounds.x());
-        let y = scale.physical_length(bounds.y());
+        let x = physical_coordinate(scale, bounds.signed_x());
+        let y = physical_coordinate(scale, bounds.signed_y());
         let physical_item_width = scale.physical_length(item_width);
         let physical_item_height = scale.physical_length(item_height);
         let item_rect = Rect::new(x, y, physical_item_width, physical_item_height);
@@ -195,8 +195,8 @@ impl OverlayRenderer {
         let thumbnail_padding = geometry.thumbnail_padding;
         let footer_height = geometry.footer_height;
         let thumbnail_rect = Rect::new(
-            x + scale.physical_length(thumbnail_padding),
-            y + scale.physical_length(thumbnail_padding),
+            x + i64::from(scale.physical_length(thumbnail_padding)),
+            y + i64::from(scale.physical_length(thumbnail_padding)),
             scale.physical_length(item_width.saturating_sub(2 * thumbnail_padding)),
             scale
                 .physical_length(item_height.saturating_sub(footer_height + 2 * thumbnail_padding)),
@@ -216,8 +216,8 @@ impl OverlayRenderer {
         let icon_size = geometry.icon_size;
         let icon_y = footer_top + footer_height.saturating_sub(icon_size) / 2;
         let icon_rect = Rect::new(
-            x + scale.physical_length(footer_padding),
-            y + scale.physical_length(icon_y),
+            x + i64::from(scale.physical_length(footer_padding)),
+            y + i64::from(scale.physical_length(icon_y)),
             scale.physical_length(icon_size),
             scale.physical_length(icon_size),
         );
@@ -239,8 +239,8 @@ impl OverlayRenderer {
                 pixels,
                 surface_width,
                 &item.application_icon().fallback_monogram().to_string(),
-                icon_rect.x + icon_rect.width / 4,
-                icon_rect.y + icon_rect.height / 8,
+                icon_rect.x + i64::from(icon_rect.width / 4),
+                icon_rect.y + i64::from(icon_rect.height / 8),
                 icon_rect.width / 2,
                 icon_rect.height.saturating_mul(3) / 4,
                 (f32::from(u16::try_from(icon_size).unwrap_or(u16::MAX)) * 0.5) * font_scale,
@@ -253,8 +253,8 @@ impl OverlayRenderer {
             pixels,
             surface_width,
             item.title(),
-            x + scale.physical_length(title_x),
-            y + scale.physical_length(geometry.title_y),
+            x + i64::from(scale.physical_length(title_x)),
+            y + i64::from(scale.physical_length(geometry.title_y)),
             scale.physical_length(item_width.saturating_sub(title_x + footer_padding)),
             scale.physical_length(geometry.title_height),
             geometry.title_font_size * font_scale,
@@ -269,8 +269,8 @@ impl OverlayRenderer {
         pixels: &mut [u32],
         surface_width: u32,
         text: &str,
-        x: u32,
-        y: u32,
+        x: i64,
+        y: i64,
         text_width: u32,
         text_height: u32,
         font_size: f32,
@@ -291,17 +291,10 @@ impl OverlayRenderer {
             &mut self.swash_cache,
             color,
             |glyph_x, glyph_y, width, height, color| {
-                let Some(glyph_x) = i64::from(x).checked_add(i64::from(glyph_x)) else {
+                let Some(glyph_x) = x.checked_add(i64::from(glyph_x)) else {
                     return;
                 };
-                let Some(glyph_y) = i64::from(y).checked_add(i64::from(glyph_y)) else {
-                    return;
-                };
-                if glyph_x < 0 || glyph_y < 0 {
-                    return;
-                }
-                let (Ok(glyph_x), Ok(glyph_y)) = (u32::try_from(glyph_x), u32::try_from(glyph_y))
-                else {
+                let Some(glyph_y) = y.checked_add(i64::from(glyph_y)) else {
                     return;
                 };
                 let Some(glyph_rect) = Rect::new(glyph_x, glyph_y, width, height)
@@ -344,7 +337,7 @@ fn clip_items_to_viewport(
         surface_width,
         Rect::new(
             0,
-            viewport_bottom,
+            i64::from(viewport_bottom),
             surface_width,
             surface_height.saturating_sub(viewport_bottom),
         ),
@@ -355,7 +348,7 @@ fn clip_items_to_viewport(
         surface_width,
         Rect::new(
             0,
-            viewport_y,
+            i64::from(viewport_y),
             viewport_x.min(surface_width),
             viewport_bottom.saturating_sub(viewport_y),
         ),
@@ -365,13 +358,23 @@ fn clip_items_to_viewport(
         pixels,
         surface_width,
         Rect::new(
-            viewport_right,
-            viewport_y,
+            i64::from(viewport_right),
+            i64::from(viewport_y),
             surface_width.saturating_sub(viewport_right),
             viewport_bottom.saturating_sub(viewport_y),
         ),
         background,
     );
+}
+
+fn physical_coordinate(scale: FractionalScale, logical: i64) -> i64 {
+    let magnitude = u32::try_from(logical.unsigned_abs()).unwrap_or(u32::MAX);
+    let physical = i64::from(scale.physical_length(magnitude));
+    if logical.is_negative() {
+        -physical
+    } else {
+        physical
+    }
 }
 
 fn apply_opacity(pixels: &mut [u32], opacity: u8) {
@@ -396,14 +399,14 @@ fn apply_opacity(pixels: &mut [u32], opacity: u8) {
 
 #[derive(Clone, Copy)]
 struct Rect {
-    x: u32,
-    y: u32,
+    x: i64,
+    y: i64,
     width: u32,
     height: u32,
 }
 
 impl Rect {
-    const fn new(x: u32, y: u32, width: u32, height: u32) -> Self {
+    const fn new(x: i64, y: i64, width: u32, height: u32) -> Self {
         Self {
             x,
             y,
@@ -417,21 +420,39 @@ impl Rect {
         let y = self.y.max(other.y);
         let right = self
             .x
-            .saturating_add(self.width)
-            .min(other.x.saturating_add(other.width));
+            .saturating_add(i64::from(self.width))
+            .min(other.x.saturating_add(i64::from(other.width)));
         let bottom = self
             .y
-            .saturating_add(self.height)
-            .min(other.y.saturating_add(other.height));
-        (right > x && bottom > y).then(|| Self::new(x, y, right - x, bottom - y))
+            .saturating_add(i64::from(self.height))
+            .min(other.y.saturating_add(i64::from(other.height)));
+        let width = u32::try_from(right.saturating_sub(x)).ok()?;
+        let height = u32::try_from(bottom.saturating_sub(y)).ok()?;
+        (width > 0 && height > 0).then(|| Self::new(x, y, width, height))
     }
 }
 
 fn fill_rect(pixels: &mut [u32], surface_width: u32, rect: Rect, color: Color) {
     let pixel = color.0;
-    for y in rect.y..rect.y.saturating_add(rect.height) {
-        for x in rect.x..rect.x.saturating_add(rect.width) {
-            if let Some(target) = pixel_mut(pixels, surface_width, x, y) {
+    let start_x = rect.x.max(0);
+    let start_y = rect.y.max(0);
+    let end_x = rect
+        .x
+        .saturating_add(i64::from(rect.width))
+        .min(i64::from(surface_width));
+    let surface_height = u32::try_from(pixels.len())
+        .unwrap_or(u32::MAX)
+        .checked_div(surface_width.max(1))
+        .unwrap_or(0);
+    let end_y = rect
+        .y
+        .saturating_add(i64::from(rect.height))
+        .min(i64::from(surface_height));
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            if let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y))
+                && let Some(target) = pixel_mut(pixels, surface_width, x, y)
+            {
                 *target = pixel;
             }
         }
@@ -450,7 +471,8 @@ fn stroke_rect(pixels: &mut [u32], surface_width: u32, rect: Rect, thickness: u3
         surface_width,
         Rect::new(
             rect.x,
-            rect.y.saturating_add(rect.height.saturating_sub(thickness)),
+            rect.y
+                .saturating_add(i64::from(rect.height.saturating_sub(thickness))),
             rect.width,
             thickness,
         ),
@@ -466,7 +488,8 @@ fn stroke_rect(pixels: &mut [u32], surface_width: u32, rect: Rect, thickness: u3
         pixels,
         surface_width,
         Rect::new(
-            rect.x.saturating_add(rect.width.saturating_sub(thickness)),
+            rect.x
+                .saturating_add(i64::from(rect.width.saturating_sub(thickness))),
             rect.y,
             thickness,
             rect.height,
@@ -477,8 +500,25 @@ fn stroke_rect(pixels: &mut [u32], surface_width: u32, rect: Rect, thickness: u3
 
 fn blend_rect(pixels: &mut [u32], surface_width: u32, rect: Rect, source: Color) {
     let (source_red, source_green, source_blue, source_alpha) = source.as_rgba_tuple();
-    for y in rect.y..rect.y.saturating_add(rect.height) {
-        for x in rect.x..rect.x.saturating_add(rect.width) {
+    let start_x = rect.x.max(0);
+    let start_y = rect.y.max(0);
+    let end_x = rect
+        .x
+        .saturating_add(i64::from(rect.width))
+        .min(i64::from(surface_width));
+    let surface_height = u32::try_from(pixels.len())
+        .unwrap_or(u32::MAX)
+        .checked_div(surface_width.max(1))
+        .unwrap_or(0);
+    let end_y = rect
+        .y
+        .saturating_add(i64::from(rect.height))
+        .min(i64::from(surface_height));
+    for y in start_y..end_y {
+        for x in start_x..end_x {
+            let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+                continue;
+            };
             let Some(target) = pixel_mut(pixels, surface_width, x, y) else {
                 continue;
             };
@@ -520,8 +560,8 @@ fn application_color(application_id: &str) -> Color {
 }
 
 fn draw_icon(pixels: &mut [u32], surface_width: u32, bounds: Rect, icon: &IconImage) {
-    let offset_x = bounds.x + bounds.width.saturating_sub(icon.width()) / 2;
-    let offset_y = bounds.y + bounds.height.saturating_sub(icon.height()) / 2;
+    let offset_x = bounds.x + i64::from(bounds.width.saturating_sub(icon.width()) / 2);
+    let offset_y = bounds.y + i64::from(bounds.height.saturating_sub(icon.height()) / 2);
     for icon_y in 0..icon.height() {
         for icon_x in 0..icon.width() {
             let Some(index) = icon_y
@@ -538,7 +578,12 @@ fn draw_icon(pixels: &mut [u32], surface_width: u32, bounds: Rect, icon: &IconIm
             blend_rect(
                 pixels,
                 surface_width,
-                Rect::new(offset_x + icon_x, offset_y + icon_y, 1, 1),
+                Rect::new(
+                    offset_x + i64::from(icon_x),
+                    offset_y + i64::from(icon_y),
+                    1,
+                    1,
+                ),
                 Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3]),
             );
         }
@@ -555,8 +600,8 @@ fn draw_thumbnail(
     if width == 0 || height == 0 {
         return;
     }
-    let offset_x = bounds.x + (bounds.width - width) / 2;
-    let offset_y = bounds.y + (bounds.height - height) / 2;
+    let offset_x = bounds.x + i64::from((bounds.width - width) / 2);
+    let offset_y = bounds.y + i64::from((bounds.height - height) / 2);
     let (presentation_width, presentation_height) = thumbnail.presentation_size();
     for target_y in 0..height {
         let source_y = u64::from(target_y) * u64::from(presentation_height) / u64::from(height);
@@ -571,12 +616,11 @@ fn draw_thumbnail(
             else {
                 continue;
             };
-            if let Some(target) = pixel_mut(
-                pixels,
-                surface_width,
-                offset_x + target_x,
-                offset_y + target_y,
-            ) {
+            let target_x = offset_x + i64::from(target_x);
+            let target_y = offset_y + i64::from(target_y);
+            if let (Ok(target_x), Ok(target_y)) = (u32::try_from(target_x), u32::try_from(target_y))
+                && let Some(target) = pixel_mut(pixels, surface_width, target_x, target_y)
+            {
                 *target = color.0;
             }
         }
@@ -585,7 +629,12 @@ fn draw_thumbnail(
 
 #[cfg(test)]
 mod card_geometry_tests {
-    use super::card_geometry;
+    use cosmic_window_switcher::{
+        AccessibilityPolicy, CardSize, FractionalScale, OverlayPresentation, SessionDisplay,
+        SwitcherGrid, SwitcherItem, SwitcherPreferences, WindowId,
+    };
+
+    use super::{Color, OverlayRenderer, card_geometry};
 
     #[test]
     fn card_geometry_prioritizes_thumbnail_content_over_metadata() {
@@ -605,5 +654,65 @@ mod card_geometry_tests {
         let space_below = 300_u32.saturating_sub(geometry.title_y + geometry.title_height);
 
         assert!(space_above.abs_diff(space_below) <= 1);
+    }
+
+    #[test]
+    fn backward_peek_renders_only_the_intersecting_part_of_the_leading_row() {
+        let mut grid = SwitcherGrid::new(
+            SessionDisplay::from("eDP-1"),
+            (0..11).map(|index| {
+                SwitcherItem::new(
+                    WindowId::from(format!("window-{index}")),
+                    "com.example.Application".to_owned(),
+                    format!("Window {index}"),
+                )
+            }),
+            &WindowId::from("window-10"),
+        )
+        .expect("the selected Window belongs to the grid");
+        let presentation = OverlayPresentation::resolve(
+            &SwitcherPreferences::default().snapshot(),
+            AccessibilityPolicy::default(),
+        );
+
+        let rendered = OverlayRenderer::new()
+            .render(
+                &mut grid,
+                1_316,
+                530,
+                CardSize::Large,
+                FractionalScale::from_integer(1),
+                presentation,
+            )
+            .expect("the backward-peeking Grid renders");
+        let leading = rendered
+            .layout
+            .item_bounds(0)
+            .expect("the leading row intersects the viewport");
+        let following = rendered
+            .layout
+            .item_bounds(5)
+            .expect("the following row is fully visible");
+        let gap_y = leading
+            .signed_y()
+            .saturating_add(i64::from(leading.size().1))
+            .saturating_add(1);
+        assert!(gap_y < following.signed_y());
+        let gap_x = leading.signed_x().saturating_add(10);
+        let (Ok(gap_x), Ok(gap_y)) = (u32::try_from(gap_x), u32::try_from(gap_y)) else {
+            panic!("the visible leading-row gap lies on the rendered surface");
+        };
+        let pixel_index = usize::try_from((gap_y * 1_316 + gap_x) * 4)
+            .expect("the sampled pixel index fits usize");
+        let pixel = u32::from_ne_bytes(
+            rendered.pixels[pixel_index..pixel_index + 4]
+                .try_into()
+                .expect("one rendered ARGB pixel is available"),
+        );
+
+        assert_eq!(
+            pixel,
+            Color::rgba(24, 27, 36, presentation.dimming().alpha()).0
+        );
     }
 }

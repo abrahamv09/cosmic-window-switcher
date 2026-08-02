@@ -293,7 +293,10 @@ fn responsive_large_cards_follow_window_count_width_targets() {
         (1, (640, 480)),
         (2, (640, 480)),
         (3, (480, 360)),
-        (9, (448, 336)),
+        (4, (352, 264)),
+        (5, (288, 216)),
+        (6, (480, 360)),
+        (7, (288, 216)),
     ] {
         let mut grid = SwitcherGrid::new(
             SessionDisplay::from("eDP-1"),
@@ -314,7 +317,106 @@ fn responsive_large_cards_follow_window_count_width_targets() {
             layout.item_bounds(0).map(GridRect::size),
             Some(expected_size)
         );
+        assert_eq!(
+            layout.columns(),
+            match window_count {
+                1..=5 => window_count,
+                6 => 3,
+                _ => 5,
+            }
+        );
     }
+}
+
+#[test]
+fn overflow_layout_peeks_backward_when_selection_reaches_the_final_row() {
+    let mut grid = SwitcherGrid::new(
+        SessionDisplay::from("eDP-1"),
+        (0..9).map(|index| {
+            item(
+                &format!("window-{index}"),
+                "com.example.Application",
+                &format!("Window {index}"),
+            )
+        }),
+        &WindowId::from("window-7"),
+    )
+    .expect("the selected Window belongs to the grid");
+
+    let layout = grid
+        .layout(1_316, 822, CardSize::Large)
+        .centered_in(1_316, 822);
+    let viewport = layout.viewport_bounds();
+    let peeked = layout
+        .item_bounds(0)
+        .expect("the first row peeks backward into the viewport");
+    let selected = layout
+        .item_bounds(7)
+        .expect("the selected final row remains fully visible");
+
+    assert_eq!(layout.visible_item_range(), 0..9);
+    assert!(peeked.y() < viewport.y());
+    assert!(peeked.y() + peeked.size().1 > viewport.y());
+    assert!(selected.y() >= viewport.y());
+    assert!(selected.y() + selected.size().1 <= viewport.y() + viewport.size().1);
+}
+
+#[test]
+fn responsive_layout_fits_two_rows_and_a_half_row_on_wide_displays() {
+    let mut six_windows = SwitcherGrid::new(
+        SessionDisplay::from("eDP-1"),
+        (0..6).map(|index| {
+            item(
+                &format!("six-{index}"),
+                "com.example.Application",
+                &format!("Window {index}"),
+            )
+        }),
+        &WindowId::from("six-1"),
+    )
+    .expect("the selected Window belongs to the six-Window Grid");
+    let six_layout = six_windows.responsive_layout(2_560, 1_080, CardSize::Large);
+
+    assert_eq!(six_layout.columns(), 3);
+    assert_eq!(six_layout.visible_rows(), 2);
+    assert_eq!(six_layout.visible_item_range(), 0..6);
+    assert!(six_layout.logical_size().1 <= 1_080 * 19 / 20);
+
+    let mut eleven_windows = SwitcherGrid::new(
+        SessionDisplay::from("eDP-1"),
+        (0..11).map(|index| {
+            item(
+                &format!("eleven-{index}"),
+                "com.example.Application",
+                &format!("Window {index}"),
+            )
+        }),
+        &WindowId::from("eleven-1"),
+    )
+    .expect("the selected Window belongs to the eleven-Window Grid");
+    let eleven_layout = eleven_windows.responsive_layout(3_000, 900, CardSize::Large);
+
+    assert_eq!(eleven_layout.columns(), 5);
+    assert_eq!(eleven_layout.visible_rows(), 2);
+    assert_eq!(eleven_layout.visible_item_range(), 0..11);
+    assert!(eleven_layout.logical_size().1 <= 900 * 19 / 20);
+
+    let seven_layout = SwitcherGrid::new(
+        SessionDisplay::from("eDP-1"),
+        (0..7).map(|index| {
+            item(
+                &format!("seven-{index}"),
+                "com.example.Application",
+                &format!("Window {index}"),
+            )
+        }),
+        &WindowId::from("seven-1"),
+    )
+    .expect("the selected Window belongs to the seven-Window Grid")
+    .responsive_layout(1_366, 768, CardSize::Large);
+
+    assert_eq!(seven_layout.columns(), 5);
+    assert_eq!(seven_layout.total_rows(), 2);
 }
 
 #[test]

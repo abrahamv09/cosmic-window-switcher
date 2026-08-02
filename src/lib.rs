@@ -265,23 +265,25 @@ impl SwitchingSession {
         if self.state == SessionState::Finished {
             return SessionEffect::None;
         }
+        match direction {
+            GridNavigationDirection::Left => {
+                return self.move_selection(InvocationDirection::Previous);
+            }
+            GridNavigationDirection::Right => {
+                return self.move_selection(InvocationDirection::Next);
+            }
+            GridNavigationDirection::Up | GridNavigationDirection::Down => {}
+        }
         let columns = columns.max(1);
         let candidate = match direction {
-            GridNavigationDirection::Left if !self.selected.is_multiple_of(columns) => {
-                self.selected.checked_sub(1)
-            }
-            GridNavigationDirection::Right
-                if self.selected % columns + 1 < columns
-                    && self.selected + 1 < self.windows.len() =>
-            {
-                self.selected.checked_add(1)
-            }
             GridNavigationDirection::Up => self.selected.checked_sub(columns),
             GridNavigationDirection::Down => self
                 .selected
                 .checked_add(columns)
                 .filter(|candidate| *candidate < self.windows.len()),
-            GridNavigationDirection::Left | GridNavigationDirection::Right => None,
+            GridNavigationDirection::Left | GridNavigationDirection::Right => {
+                unreachable!("horizontal Grid Navigation returned through MRU traversal")
+            }
         };
         let Some(candidate) = candidate else {
             return SessionEffect::None;
@@ -571,8 +573,9 @@ impl CardSize {
     pub fn responsive_logical_size(self, item_count: usize, display_width: u32) -> (u32, u32) {
         let width_percentage = match item_count {
             0..=2 => 40_u64,
-            3 => 30,
-            _ => 28,
+            3 | 6 => 30,
+            4 => 22,
+            _ => 18,
         };
         let (density_numerator, density_denominator) = match self {
             Self::Small => (4_u64, 5_u64),
@@ -636,20 +639,30 @@ impl FractionalScale {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GridRect {
-    x: u32,
-    y: u32,
+    x: i64,
+    y: i64,
     width: u32,
     height: u32,
 }
 
 impl GridRect {
     #[must_use]
-    pub const fn x(self) -> u32 {
+    pub fn x(self) -> u32 {
+        u32::try_from(self.x).unwrap_or_else(|_| if self.x.is_negative() { 0 } else { u32::MAX })
+    }
+
+    #[must_use]
+    pub fn y(self) -> u32 {
+        u32::try_from(self.y).unwrap_or_else(|_| if self.y.is_negative() { 0 } else { u32::MAX })
+    }
+
+    #[must_use]
+    pub const fn signed_x(self) -> i64 {
         self.x
     }
 
     #[must_use]
-    pub const fn y(self) -> u32 {
+    pub const fn signed_y(self) -> i64 {
         self.y
     }
 
@@ -668,6 +681,7 @@ pub struct GridLayout {
     logical_size: (u32, u32),
     card_size: (u32, u32),
     origin: (u32, u32),
+    leading_peek: bool,
 }
 
 impl GridLayout {
@@ -699,8 +713,8 @@ impl GridLayout {
     #[must_use]
     pub const fn viewport_bounds(&self) -> GridRect {
         GridRect {
-            x: self.origin.0,
-            y: self.origin.1,
+            x: self.origin.0 as i64,
+            y: self.origin.1 as i64,
             width: self.logical_size.0,
             height: self.logical_size.1,
         }
@@ -724,13 +738,15 @@ impl GridLayout {
         let column = visible_index % self.columns;
         let row = visible_index / self.columns;
         let (width, height) = self.card_size;
+        let leading_offset = if self.leading_peek { height / 2 } else { 0 };
         Some(GridRect {
-            x: self.origin.0
-                + GRID_PADDING
-                + u32::try_from(column).ok()? * (width.saturating_add(GRID_ITEM_GAP)),
-            y: self.origin.1
-                + GRID_PADDING
-                + u32::try_from(row).ok()? * (height.saturating_add(GRID_ITEM_GAP)),
+            x: i64::from(self.origin.0)
+                + i64::from(GRID_PADDING)
+                + i64::from(u32::try_from(column).ok()?)
+                    * i64::from(width.saturating_add(GRID_ITEM_GAP)),
+            y: i64::from(self.origin.1) + i64::from(GRID_PADDING) - i64::from(leading_offset)
+                + i64::from(u32::try_from(row).ok()?)
+                    * i64::from(height.saturating_add(GRID_ITEM_GAP)),
             width,
             height,
         })
@@ -739,24 +755,35 @@ impl GridLayout {
     #[must_use]
     pub fn item_at(&self, x: f64, y: f64) -> Option<usize> {
         let viewport = self.viewport_bounds();
-        if x < f64::from(viewport.x)
-            || x >= f64::from(viewport.x.saturating_add(viewport.width))
-            || y < f64::from(viewport.y)
-            || y >= f64::from(viewport.y.saturating_add(viewport.height))
+        if x < logical_coordinate_as_f64(viewport.x)
+            || x >= logical_coordinate_as_f64(viewport.x.saturating_add(i64::from(viewport.width)))
+            || y < logical_coordinate_as_f64(viewport.y)
+            || y >= logical_coordinate_as_f64(viewport.y.saturating_add(i64::from(viewport.height)))
         {
             return None;
         }
         self.visible_item_range.clone().find(|item_index| {
             self.item_bounds(*item_index).is_some_and(|bounds| {
-                let right = bounds.x.saturating_add(bounds.width);
-                let bottom = bounds.y.saturating_add(bounds.height);
-                x >= f64::from(bounds.x)
-                    && x < f64::from(right)
-                    && y >= f64::from(bounds.y)
-                    && y < f64::from(bottom)
+                let right = bounds.x.saturating_add(i64::from(bounds.width));
+                let bottom = bounds.y.saturating_add(i64::from(bounds.height));
+                x >= logical_coordinate_as_f64(bounds.x)
+                    && x < logical_coordinate_as_f64(right)
+                    && y >= logical_coordinate_as_f64(bounds.y)
+                    && y < logical_coordinate_as_f64(bottom)
             })
         })
     }
+}
+
+fn logical_coordinate_as_f64(coordinate: i64) -> f64 {
+    let coordinate = i32::try_from(coordinate).unwrap_or_else(|_| {
+        if coordinate.is_negative() {
+            i32::MIN
+        } else {
+            i32::MAX
+        }
+    });
+    f64::from(coordinate)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -866,6 +893,7 @@ impl SwitcherGrid {
             maximum_logical_width,
             maximum_logical_height,
             card_size.logical_size(),
+            5,
         )
     }
 
@@ -876,11 +904,27 @@ impl SwitcherGrid {
         display_logical_height: u32,
         card_size: CardSize,
     ) -> GridLayout {
-        self.layout_with_card_dimensions(
-            display_logical_width.saturating_mul(19) / 20,
-            display_logical_height.saturating_mul(19) / 20,
-            card_size.responsive_logical_size(self.items.len(), display_logical_width),
-        )
+        let maximum_width = display_logical_width.saturating_mul(19) / 20;
+        let maximum_height = display_logical_height.saturating_mul(19) / 20;
+        let columns = responsive_columns(self.items.len());
+        let total_rows = self.items.len().div_ceil(columns);
+        let columns_u32 = u32::try_from(columns).unwrap_or(u32::MAX);
+        let horizontal_overhead =
+            2 * GRID_PADDING + columns_u32.saturating_sub(1).saturating_mul(GRID_ITEM_GAP);
+        let maximum_card_width = maximum_width
+            .saturating_sub(horizontal_overhead)
+            .checked_div(columns_u32.max(1))
+            .unwrap_or(0)
+            .max(1);
+        let target_card =
+            card_size.responsive_logical_size(self.items.len(), display_logical_width);
+        let fitted_width = target_card.0.min(maximum_card_width);
+        let card_dimensions = fit_responsive_card_height(
+            (fitted_width, fitted_width.saturating_mul(3) / 4),
+            maximum_height,
+            total_rows,
+        );
+        self.layout_with_card_dimensions(maximum_width, maximum_height, card_dimensions, columns)
     }
 
     fn layout_with_card_dimensions(
@@ -888,6 +932,7 @@ impl SwitcherGrid {
         maximum_logical_width: u32,
         maximum_logical_height: u32,
         card_size: (u32, u32),
+        maximum_columns: usize,
     ) -> GridLayout {
         let (card_width, card_height) = card_size;
         let available_width =
@@ -898,6 +943,7 @@ impl SwitcherGrid {
         let item_count = self.items.len();
         let columns = usize::try_from(columns)
             .unwrap_or(usize::MAX)
+            .min(maximum_columns.max(1))
             .min(item_count.max(1));
         let total_rows = item_count.div_ceil(columns);
         let available_height =
@@ -920,12 +966,17 @@ impl SwitcherGrid {
                 .saturating_sub(1)
                 .saturating_mul(GRID_ITEM_GAP);
         let peek_height = card_height / 2;
-        let peek_fits = fully_visible_item_range.end < item_count
+        let has_leading_row = fully_visible_item_range.start > 0;
+        let has_trailing_row = fully_visible_item_range.end < item_count;
+        let peek_fits = (has_leading_row || has_trailing_row)
             && fully_visible_height
                 .saturating_add(GRID_ITEM_GAP)
                 .saturating_add(peek_height)
                 <= available_height;
-        let visible_item_range = if peek_fits {
+        let leading_peek = peek_fits && has_leading_row;
+        let visible_item_range = if leading_peek {
+            fully_visible_item_range.start.saturating_sub(columns)..fully_visible_item_range.end
+        } else if peek_fits {
             fully_visible_item_range.start
                 ..fully_visible_item_range
                     .end
@@ -950,6 +1001,7 @@ impl SwitcherGrid {
             logical_size: (logical_width, logical_height),
             card_size: (card_width, card_height),
             origin: (0, 0),
+            leading_peek,
         }
     }
 
@@ -993,6 +1045,43 @@ impl SwitcherGrid {
         item.degrade_thumbnail(reason);
         true
     }
+}
+
+fn responsive_columns(item_count: usize) -> usize {
+    match item_count {
+        0 => 1,
+        1..=5 => item_count,
+        6 => 3,
+        _ => 5,
+    }
+}
+
+fn fit_responsive_card_height(
+    card_size: (u32, u32),
+    maximum_height: u32,
+    total_rows: usize,
+) -> (u32, u32) {
+    let fully_visible_rows = total_rows.min(2);
+    let includes_peek = total_rows > 2;
+    let gap_count = fully_visible_rows
+        .saturating_sub(1)
+        .saturating_add(usize::from(includes_peek));
+    let overhead = 2 * GRID_PADDING
+        + u32::try_from(gap_count)
+            .unwrap_or(u32::MAX)
+            .saturating_mul(GRID_ITEM_GAP);
+    let available_for_cards = maximum_height.saturating_sub(overhead).max(1);
+    let maximum_card_height = if includes_peek {
+        available_for_cards.saturating_mul(2) / 5
+    } else {
+        available_for_cards / u32::try_from(fully_visible_rows.max(1)).unwrap_or(u32::MAX)
+    }
+    .max(1);
+    if card_size.1 <= maximum_card_height {
+        return card_size;
+    }
+    let width = maximum_card_height.saturating_mul(4) / 3;
+    (width.max(1), width.saturating_mul(3) / 4)
 }
 
 fn update_accessible_positions(items: &mut [SwitcherItem]) {

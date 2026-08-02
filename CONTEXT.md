@@ -117,11 +117,11 @@ The user-selected maximum Live Thumbnail frame rate, not a request for duplicate
 _Avoid_: Guaranteed frame rate, thumbnail quality
 
 **Switcher Grid**:
-The centered adaptive arrangement of every Switcher Item in one continuous MRU layout. Items wrap into fixed-size rows as their count grows; rows may extend below the viewport, which scrolls just enough to reveal the selected row. Visual rows and scrolling never alter MRU Order.
+The centered adaptive arrangement of every Switcher Item in one continuous MRU layout. Up to five Switcher Items occupy a row: one through five Windows use one row, six use two rows of three, and larger sets use rows of five. Card geometry scales to retain two complete rows and a half-row continuation cue when more rows exist. Visual rows and scrolling never alter MRU Order.
 _Avoid_: Window list, thumbnail strip, paginated grid
 
 **Grid Viewport**:
-The visible portion of the continuous Switcher Grid. Keyboard navigation automatically reveals the selected row. Only rows intersecting the viewport receive continuous Live Thumbnail frames; an off-screen row remains part of the same grid and resumes capture when revealed.
+The visible portion of the continuous Switcher Grid. Keyboard navigation automatically reveals the selected row; overflow peeks forward or backward by half a row so earlier and later content remain discoverable. Only rows intersecting the viewport receive continuous Live Thumbnail frames; an off-screen row remains part of the same grid and resumes capture when revealed.
 _Avoid_: Grid page
 
 **Switching Session**:
