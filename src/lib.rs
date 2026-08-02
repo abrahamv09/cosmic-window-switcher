@@ -135,7 +135,7 @@ pub enum SessionInterruption {
 
 impl SessionInterruption {
     #[must_use]
-    const fn pauses_session(self) -> bool {
+    const fn deactivates_cosmic_session(self) -> bool {
         !matches!(self, Self::OutputLoss)
     }
 }
@@ -148,45 +148,52 @@ pub enum SessionLifecycleSignal {
     PreparingForShutdown(bool),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionBoundary {
+    Inactive,
+    Locked,
+    PreparingForSleep,
+    PreparingForShutdown,
+}
+
+#[derive(Clone, Debug)]
 pub struct SessionLifecycleModel {
-    boundaries: u8,
+    boundaries: Vec<SessionBoundary>,
     interruption: Option<SessionInterruption>,
 }
 
 impl SessionLifecycleModel {
-    const INACTIVE: u8 = 1;
-    const LOCKED: u8 = 1 << 1;
-    const PREPARING_FOR_SLEEP: u8 = 1 << 2;
-    const PREPARING_FOR_SHUTDOWN: u8 = 1 << 3;
-
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            boundaries: 0,
+            boundaries: Vec::new(),
             interruption: None,
         }
     }
 
     pub fn handle(&mut self, signal: SessionLifecycleSignal) -> Option<ServiceEvent> {
         match signal {
-            SessionLifecycleSignal::Locked(locked) => self.set_boundary(Self::LOCKED, locked),
-            SessionLifecycleSignal::Active(active) => self.set_boundary(Self::INACTIVE, !active),
+            SessionLifecycleSignal::Locked(locked) => {
+                self.set_boundary(SessionBoundary::Locked, locked);
+            }
+            SessionLifecycleSignal::Active(active) => {
+                self.set_boundary(SessionBoundary::Inactive, !active);
+            }
             SessionLifecycleSignal::PreparingForSleep(preparing) => {
-                self.set_boundary(Self::PREPARING_FOR_SLEEP, preparing);
+                self.set_boundary(SessionBoundary::PreparingForSleep, preparing);
             }
             SessionLifecycleSignal::PreparingForShutdown(preparing) => {
-                self.set_boundary(Self::PREPARING_FOR_SHUTDOWN, preparing);
+                self.set_boundary(SessionBoundary::PreparingForShutdown, preparing);
             }
         }
 
-        let next = if self.has_boundary(Self::PREPARING_FOR_SHUTDOWN) {
+        let next = if self.has_boundary(SessionBoundary::PreparingForShutdown) {
             Some(SessionInterruption::SessionShutdown)
-        } else if self.has_boundary(Self::PREPARING_FOR_SLEEP) {
+        } else if self.has_boundary(SessionBoundary::PreparingForSleep) {
             Some(SessionInterruption::Suspend)
-        } else if self.has_boundary(Self::LOCKED) {
+        } else if self.has_boundary(SessionBoundary::Locked) {
             Some(SessionInterruption::ScreenLock)
-        } else if self.has_boundary(Self::INACTIVE) {
+        } else if self.has_boundary(SessionBoundary::Inactive) {
             Some(SessionInterruption::UserSwitch)
         } else {
             None
@@ -199,16 +206,18 @@ impl SessionLifecycleModel {
         }
     }
 
-    fn set_boundary(&mut self, boundary: u8, asserted: bool) {
+    fn set_boundary(&mut self, boundary: SessionBoundary, asserted: bool) {
         if asserted {
-            self.boundaries |= boundary;
+            if !self.boundaries.contains(&boundary) {
+                self.boundaries.push(boundary);
+            }
         } else {
-            self.boundaries &= !boundary;
+            self.boundaries.retain(|candidate| *candidate != boundary);
         }
     }
 
-    const fn has_boundary(self, boundary: u8) -> bool {
-        self.boundaries & boundary != 0
+    fn has_boundary(&self, boundary: SessionBoundary) -> bool {
+        self.boundaries.contains(&boundary)
     }
 }
 
@@ -1848,7 +1857,7 @@ pub struct SwitcherService {
     window_scope: WindowScope,
     workspace_eligibility: WorkspaceEligibilityState,
     capture_backend: CaptureBackendState,
-    session_active: bool,
+    cosmic_session_active: bool,
 }
 
 impl Default for SwitcherService {
@@ -1867,7 +1876,7 @@ impl SwitcherService {
             window_scope: WindowScope::AllWorkspaces,
             workspace_eligibility: WorkspaceEligibilityState::AwaitingSnapshot,
             capture_backend: CaptureBackendState::NotNegotiated,
-            session_active: true,
+            cosmic_session_active: true,
         }
     }
 
@@ -1913,7 +1922,7 @@ impl SwitcherService {
     }
 
     pub fn observe(&mut self, event: WindowEvent) -> Vec<ServiceEffect> {
-        if !self.session_active {
+        if !self.cosmic_session_active {
             return Vec::new();
         }
         let closed = match &event {
@@ -1970,7 +1979,7 @@ impl SwitcherService {
         request: InvocationRequest,
         windows: impl IntoIterator<Item = WindowId>,
     ) -> Vec<ServiceEffect> {
-        if !self.session_active {
+        if !self.cosmic_session_active {
             return Vec::new();
         }
         let Ok(session) =
@@ -1994,19 +2003,27 @@ impl SwitcherService {
     pub fn handle(&mut self, event: ServiceEvent) -> Vec<ServiceEffect> {
         match event {
             ServiceEvent::SessionInterrupted(interruption) => {
-                let had_active_session = self.active_session.take().is_some();
-                if interruption.pauses_session() {
-                    self.session_active = false;
+                let active_session = self.active_session.take();
+                if interruption.deactivates_cosmic_session() {
+                    self.cosmic_session_active = false;
                     self.windows.clear();
                     self.initial_discovery_complete = false;
                 }
-                return had_active_session
-                    .then_some(ServiceEffect::Cancel)
-                    .into_iter()
-                    .collect();
+                return match active_session {
+                    Some(active_session)
+                        if interruption == SessionInterruption::OutputLoss
+                            && !active_session.revealed =>
+                    {
+                        vec![ServiceEffect::FallbackToStockSwitcher(
+                            active_session.direction,
+                        )]
+                    }
+                    Some(_) => vec![ServiceEffect::Cancel],
+                    None => Vec::new(),
+                };
             }
             ServiceEvent::SessionReactivated => {
-                self.session_active = true;
+                self.cosmic_session_active = true;
                 return Vec::new();
             }
             _ => {}

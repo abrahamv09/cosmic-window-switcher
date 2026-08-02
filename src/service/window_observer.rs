@@ -255,10 +255,8 @@ impl WindowObserver {
             .ok();
         let toplevel_manager = ToplevelManagerState::try_new(&registry_state, &queue_handle)
             .context("the compositor does not expose COSMIC Window management")?;
-        let workspace_state = WorkspaceState::new(&registry_state, &queue_handle);
         let state = ProtocolObserver {
             queue_handle: queue_handle.clone(),
-            registry_state,
             compositor,
             layer_shell,
             shm,
@@ -267,7 +265,8 @@ impl WindowObserver {
             viewporter,
             seat_state: SeatState::new(&globals, &queue_handle),
             toplevel_manager,
-            workspace_state,
+            workspace_state: WorkspaceState::new(&registry_state, &queue_handle),
+            registry_state,
             _foreign_toplevel_list: foreign_toplevel_list,
             cosmic_toplevel_info,
             capture_backend,
@@ -306,6 +305,7 @@ impl WindowObserver {
             initial_hold_modifiers: None,
             reveal_at: None,
             readiness_deadline: None,
+            reactivation: ReactivationState::Current,
             reveal_animation: RevealAnimation::default(),
             thumbnail_render: ThumbnailRender::default(),
         };
@@ -384,16 +384,24 @@ impl WindowObserver {
             .revents()
             .intersects(rustix::event::PollFlags::IN | rustix::event::PollFlags::ERR)
         {
-            if let Err(error) = normalize_wayland_read(read_guard.read()) {
-                self.state.interrupt(SessionInterruption::CompositorLoss);
-                return Err(error);
-            }
+            normalize_wayland_read(read_guard.read())?;
         } else {
             drop(read_guard);
         }
         self.event_queue
             .dispatch_pending(&mut self.state)
             .context("observe COSMIC Window events")?;
+        if self.state.reactivation == ReactivationState::AwaitingSynchronization {
+            self.event_queue
+                .roundtrip(&mut self.state)
+                .context("synchronize current COSMIC state after Session Deactivation")?;
+            while let Some(event) = self.pending_lifecycle_events.pop() {
+                self.state.handle_lifecycle_event(&event);
+            }
+            if self.state.reactivation == ReactivationState::AwaitingSynchronization {
+                self.state.complete_reactivation();
+            }
+        }
         self.state
             .start_pending_invocation(&self.pending_invocations, &queue_handle);
         self.state.handle_reveal_deadline();
@@ -453,6 +461,13 @@ enum ThumbnailRender {
     Pending,
 }
 
+#[derive(Default, PartialEq, Eq)]
+enum ReactivationState {
+    #[default]
+    Current,
+    AwaitingSynchronization,
+}
+
 struct ProtocolObserver {
     queue_handle: QueueHandle<Self>,
     registry_state: RegistryState,
@@ -503,6 +518,7 @@ struct ProtocolObserver {
     initial_hold_modifiers: Option<HoldModifiers>,
     reveal_at: Option<Instant>,
     readiness_deadline: Option<Instant>,
+    reactivation: ReactivationState,
     reveal_animation: RevealAnimation,
     thumbnail_render: ThumbnailRender,
 }
@@ -511,12 +527,17 @@ impl ProtocolObserver {
     fn handle_lifecycle_event(&mut self, event: &ServiceEvent) {
         match event {
             ServiceEvent::SessionInterrupted(interruption) => self.interrupt(*interruption),
-            ServiceEvent::SessionReactivated => self.rebuild_after_reactivation(),
+            ServiceEvent::SessionReactivated => {
+                self.reactivation = ReactivationState::AwaitingSynchronization;
+            }
             _ => unreachable!("only lifecycle events are queued by the lifecycle observer"),
         }
     }
 
     fn interrupt(&mut self, interruption: SessionInterruption) {
+        if interruption != SessionInterruption::OutputLoss {
+            self.reactivation = ReactivationState::Current;
+        }
         let effects = self
             .service
             .write()
@@ -526,7 +547,8 @@ impl ProtocolObserver {
         self.destroy_overlay();
     }
 
-    fn rebuild_after_reactivation(&mut self) {
+    fn complete_reactivation(&mut self) {
+        self.reactivation = ReactivationState::Current;
         let snapshot = self.observations.snapshot_events();
         let workspace_eligibility = self.workspace_eligibility_state();
         let mut service = self

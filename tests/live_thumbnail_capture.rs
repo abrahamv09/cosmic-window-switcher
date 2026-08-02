@@ -3,10 +3,10 @@
 use std::time::Duration;
 
 use cosmic_window_switcher::{
-    BufferTransform, CaptureBackend, CaptureEffect, CaptureFailure, CaptureOpportunity,
-    CaptureSessionModel, DmaBufCompatibility, DmaBufContractStatus, DmaBufFallbackReason,
-    FrameDamage, RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout, SwitcherItem,
-    ThumbnailFrame, WindowId,
+    BufferTransform, CaptureBackend, CaptureBackendSelection, CaptureEffect, CaptureFailure,
+    CaptureOpportunity, CaptureSessionModel, DmaBufCompatibility, DmaBufContractStatus,
+    DmaBufFallbackReason, FrameDamage, RefreshCeiling, ShmConstraints, ShmFormat, ShmFrameLayout,
+    SwitcherItem, ThumbnailFrame, WindowId,
 };
 
 fn window(id: &str) -> WindowId {
@@ -406,6 +406,36 @@ fn window_closure_viewport_exit_and_session_stop_release_every_stream() {
         vec![CaptureEffect::ReleaseStream(window("three"))]
     );
     assert_eq!(captures.active_stream_count(), 0);
+}
+
+#[test]
+fn session_cleanup_releases_all_capture_work_for_every_backend_state() {
+    let backend_states = [
+        DmaBufCompatibility::complete().select_backend(),
+        CaptureBackendSelection::shared_memory(DmaBufFallbackReason::ImportUnavailable),
+    ];
+
+    for backend in backend_states {
+        let mut captures = CaptureSessionModel::new(RefreshCeiling::Fps30);
+        captures.set_visible([window("selected"), window("background")]);
+        captures.set_selected(Some(window("selected")));
+        captures.initialized(&window("selected"), &constraints());
+        captures.initialized(&window("background"), &constraints());
+        let _requests = captures.refresh_due(Duration::ZERO, CaptureOpportunity::InputDrained);
+
+        assert_eq!(
+            captures.stop(),
+            vec![
+                CaptureEffect::ReleaseStream(window("selected")),
+                CaptureEffect::ReleaseStream(window("background")),
+            ],
+            "{}",
+            backend.backend().diagnostic_name()
+        );
+        assert_eq!(captures.active_stream_count(), 0);
+        assert_eq!(captures.next_request_at(), None);
+        assert!(captures.stop().is_empty());
+    }
 }
 
 #[test]

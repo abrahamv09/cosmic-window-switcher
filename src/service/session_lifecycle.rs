@@ -38,7 +38,7 @@ pub(super) fn monitor(events: PendingLifecycleEvents) -> Result<SessionLifecycle
                         SessionInterruption::ScreenLock,
                     ));
                     eprintln!(
-                        "COSMIC Session lifecycle observation stopped; switching is paused: {startup_error}"
+                        "COSMIC Session lifecycle observation stopped; invocations are disabled: {startup_error}"
                     );
                 }
             }

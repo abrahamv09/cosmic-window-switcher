@@ -156,6 +156,7 @@ fn every_desktop_interruption_cancels_without_activating_and_discards_session_st
             initial_hold_modifiers: HoldModifiers::ALT,
         });
         service.handle(ServiceEvent::SessionReady);
+        service.handle(ServiceEvent::RevealDelayElapsed);
 
         assert_eq!(
             service.handle(ServiceEvent::SessionInterrupted(interruption)),
@@ -171,7 +172,7 @@ fn every_desktop_interruption_cancels_without_activating_and_discards_session_st
 }
 
 #[test]
-fn mru_observation_pauses_while_the_cosmic_session_is_inactive_and_rebuilds_after_resume() {
+fn mru_observation_stops_during_session_deactivation_and_rebuilds_after_resume() {
     let mut service = service_with_mru_order(&["focused", "previous"]);
 
     service.handle(ServiceEvent::SessionInterrupted(
@@ -215,6 +216,24 @@ fn output_loss_preserves_mru_observation_for_the_still_active_cosmic_session() {
     assert_eq!(
         service.diagnostics().mru_order,
         vec![window("previous"), window("focused")]
+    );
+}
+
+#[test]
+fn output_loss_before_visible_reveal_delegates_to_the_stock_switcher() {
+    let mut service = service_with_mru_order(&["focused", "previous"]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Previous,
+        initial_hold_modifiers: HoldModifiers::ALT,
+    });
+
+    assert_eq!(
+        service.handle(ServiceEvent::SessionInterrupted(
+            SessionInterruption::OutputLoss,
+        )),
+        vec![ServiceEffect::FallbackToStockSwitcher(
+            InvocationDirection::Previous
+        )]
     );
 }
 
