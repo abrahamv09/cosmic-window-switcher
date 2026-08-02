@@ -56,12 +56,12 @@ use wayland_protocols::wp::{
 use cosmic_window_switcher::{
     APPLICATION_ID, AccessibilityPolicy, CaptureBackendSelection, CaptureEffect, CaptureFailure,
     CaptureOpportunity, CaptureSessionModel, DesktopSnapshot, DmaBufFallbackReason,
-    FractionalScale, GridLayout, HoldModifiers, InvocationDirection, InvocationRequest, Locale,
-    OverlayPresentation, PreferencesStore, REVEAL_ANIMATION_DURATION, RefreshCeiling,
-    ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences, ShmConstraints,
-    ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent, WindowId, WindowScope,
-    WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
-    WorkspaceSnapshot,
+    FractionalScale, GridLayout, GridNavigationDirection, HoldModifiers, InvocationDirection,
+    InvocationRequest, Locale, OverlayPresentation, PreferencesStore, REVEAL_ANIMATION_DURATION,
+    RefreshCeiling, ServiceEffect, ServiceEvent, SessionDisplay, SessionPreferences,
+    ShmConstraints, ShmFrameLayout, SwitcherGrid, SwitcherItem, SwitchingEvent, WindowEvent,
+    WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot,
+    WorkspaceId, WorkspaceSnapshot,
 };
 
 use super::{
@@ -81,6 +81,16 @@ const TOPLEVEL_INFO_INTERFACE: &str = "zcosmic_toplevel_info_v1";
 const WORKSPACE_MANAGER_INTERFACE: &str = "ext_workspace_manager_v1";
 const REQUIRED_TOPLEVEL_INFO_VERSION: u32 = 3;
 const REQUIRED_WORKSPACE_MANAGER_VERSION: u32 = 1;
+
+fn grid_navigation_direction(keysym: Keysym) -> Option<GridNavigationDirection> {
+    match keysym {
+        Keysym::Left => Some(GridNavigationDirection::Left),
+        Keysym::Right => Some(GridNavigationDirection::Right),
+        Keysym::Up => Some(GridNavigationDirection::Up),
+        Keysym::Down => Some(GridNavigationDirection::Down),
+        _ => None,
+    }
+}
 
 fn advertised_global_version(globals: &GlobalList, interface: &str) -> Option<u32> {
     globals.contents().with_list(|list| {
@@ -739,10 +749,16 @@ impl ProtocolObserver {
             }
             SwitchingEvent::Tab
             | SwitchingEvent::Navigate(_)
+            | SwitchingEvent::NavigateGrid { .. }
             | SwitchingEvent::Enter
             | SwitchingEvent::Escape => ServiceEvent::Switching(event),
         };
         self.handle_service_event(service_event);
+    }
+
+    fn handle_grid_navigation(&mut self, direction: GridNavigationDirection) {
+        let columns = self.grid_layout.as_ref().map_or(1, GridLayout::columns);
+        self.handle_switching_event(SwitchingEvent::NavigateGrid { direction, columns });
     }
 
     fn window_at_pointer(&self, position: (f64, f64)) -> Option<WindowId> {
@@ -1616,7 +1632,11 @@ impl KeyboardHandler for ProtocolObserver {
                 self.handle_switching_event(SwitchingEvent::Enter);
             }
             Keysym::Escape => self.handle_switching_event(SwitchingEvent::Escape),
-            _ => {}
+            keysym => {
+                if let Some(direction) = grid_navigation_direction(keysym) {
+                    self.handle_grid_navigation(direction);
+                }
+            }
         }
     }
 
@@ -1628,13 +1648,20 @@ impl KeyboardHandler for ProtocolObserver {
         _serial: u32,
         event: KeyEvent,
     ) {
-        if event.keysym == Keysym::Tab {
-            let direction = if self.interaction.shift_active {
-                InvocationDirection::Previous
-            } else {
-                InvocationDirection::Next
-            };
-            self.handle_switching_event(SwitchingEvent::Navigate(direction));
+        match event.keysym {
+            Keysym::Tab => {
+                let direction = if self.interaction.shift_active {
+                    InvocationDirection::Previous
+                } else {
+                    InvocationDirection::Next
+                };
+                self.handle_switching_event(SwitchingEvent::Navigate(direction));
+            }
+            keysym => {
+                if let Some(direction) = grid_navigation_direction(keysym) {
+                    self.handle_grid_navigation(direction);
+                }
+            }
         }
     }
 
@@ -2264,11 +2291,33 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use cosmic_window_switcher::{
-        MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId, WindowScope,
-        WorkspaceEligibilityState,
+        GridNavigationDirection, MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId,
+        WindowScope, WorkspaceEligibilityState,
     };
+    use smithay_client_toolkit::seat::keyboard::Keysym;
 
-    use super::{Observation, ObservationKey, ObservationLedger};
+    use super::{Observation, ObservationKey, ObservationLedger, grid_navigation_direction};
+
+    #[test]
+    fn arrow_keysyms_map_to_spatial_grid_directions() {
+        assert_eq!(
+            grid_navigation_direction(Keysym::Left),
+            Some(GridNavigationDirection::Left)
+        );
+        assert_eq!(
+            grid_navigation_direction(Keysym::Right),
+            Some(GridNavigationDirection::Right)
+        );
+        assert_eq!(
+            grid_navigation_direction(Keysym::Up),
+            Some(GridNavigationDirection::Up)
+        );
+        assert_eq!(
+            grid_navigation_direction(Keysym::Down),
+            Some(GridNavigationDirection::Down)
+        );
+        assert_eq!(grid_navigation_direction(Keysym::Escape), None);
+    }
 
     #[test]
     fn activation_before_delayed_identity_preserves_observed_recency() {

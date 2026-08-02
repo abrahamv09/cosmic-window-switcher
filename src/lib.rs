@@ -94,6 +94,14 @@ pub enum InvocationDirection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GridNavigationDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvocationRequest {
     pub direction: InvocationDirection,
     pub initial_hold_modifiers: HoldModifiers,
@@ -127,6 +135,10 @@ pub enum ServiceEffect {
 pub enum SwitchingEvent {
     Tab,
     Navigate(InvocationDirection),
+    NavigateGrid {
+        direction: GridNavigationDirection,
+        columns: usize,
+    },
     Enter,
     Escape,
     HoldModifiersChanged(HoldModifiers),
@@ -211,6 +223,9 @@ impl SwitchingSession {
         match event {
             SwitchingEvent::Tab => self.move_selection(InvocationDirection::Next),
             SwitchingEvent::Navigate(direction) => self.move_selection(direction),
+            SwitchingEvent::NavigateGrid { direction, columns } => {
+                self.move_grid_selection(direction, columns)
+            }
             SwitchingEvent::Enter => {
                 self.state = SessionState::Finished;
                 SessionEffect::Activate(self.selected().clone())
@@ -239,6 +254,39 @@ impl SwitchingSession {
             InvocationDirection::Previous if self.selected == 0 => self.windows.len() - 1,
             InvocationDirection::Previous => self.selected - 1,
         };
+        SessionEffect::SelectionChanged(self.selected().clone())
+    }
+
+    fn move_grid_selection(
+        &mut self,
+        direction: GridNavigationDirection,
+        columns: usize,
+    ) -> SessionEffect {
+        if self.state == SessionState::Finished {
+            return SessionEffect::None;
+        }
+        let columns = columns.max(1);
+        let candidate = match direction {
+            GridNavigationDirection::Left if !self.selected.is_multiple_of(columns) => {
+                self.selected.checked_sub(1)
+            }
+            GridNavigationDirection::Right
+                if self.selected % columns + 1 < columns
+                    && self.selected + 1 < self.windows.len() =>
+            {
+                self.selected.checked_add(1)
+            }
+            GridNavigationDirection::Up => self.selected.checked_sub(columns),
+            GridNavigationDirection::Down => self
+                .selected
+                .checked_add(columns)
+                .filter(|candidate| *candidate < self.windows.len()),
+            GridNavigationDirection::Left | GridNavigationDirection::Right => None,
+        };
+        let Some(candidate) = candidate else {
+            return SessionEffect::None;
+        };
+        self.selected = candidate;
         SessionEffect::SelectionChanged(self.selected().clone())
     }
 

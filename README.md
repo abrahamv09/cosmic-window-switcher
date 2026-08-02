@@ -155,8 +155,9 @@ only that Switcher Item to its icon-and-title card. Native Wayland Windows and
 compositor-managed XWayland Windows use the same capture path. The same names,
 positions, focus, and selected state are exposed to assistive technology
 through AT-SPI. `Tab` moves forward, `Shift+Tab` moves backward, and both
-directions wrap. The grid remains above fullscreen content without changing
-the selected Window's fullscreen state. Closed Windows disappear without
+directions wrap. Arrow keys move spatially between cards without crossing a
+grid edge. The grid remains above fullscreen content without changing the
+selected Window's fullscreen state. Closed Windows disappear without
 reordering survivors, while Windows opened during switching wait for the next
 Switching Session. When all rows do not fit, rendering follows the selected row
 so it remains visible.

@@ -39,7 +39,7 @@
   final two criteria still requires a human session with ten visible Windows,
   so the ticket is handed off as `ready-for-human` rather than marked resolved.
 - Final verification passed formatting, all-target type checking, strict
-  all-target/all-feature Clippy, all 100 tests, and an optimized release build.
+  all-target/all-feature Clippy, all 104 tests, and an optimized release build.
 - Manual restart exposed a latent runtime-feature conflict from the settings
   implementation: libcosmic enabled zbus's Tokio backend while the resident
   service uses zbus's blocking API. Switching libcosmic to its supported smol
@@ -70,3 +70,7 @@
   `org.videolan.VLC` and `com.mongodb.Compass`. The icon resolver now maps raw
   compositor identities through standard desktop-entry ID, name, and
   `StartupWMClass` metadata instead of showing fallback monograms.
+- Follow-up keyboard validation added spatial arrow-key navigation using the
+  live grid column count. Left and Right stay within their row, Up and Down stay
+  within their column, edge presses are inert, and held arrow keys repeat;
+  Tab and Shift+Tab retain their wrapping MRU behavior.

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    HoldModifiers, InvocationDirection, SessionEffect, SwitchingEvent, SwitchingSession, WindowId,
+    GridNavigationDirection, HoldModifiers, InvocationDirection, SessionEffect, SwitchingEvent,
+    SwitchingSession, WindowId,
 };
 
 fn two_window_session() -> SwitchingSession {
@@ -132,5 +133,72 @@ fn enter_activates_the_selected_window_in_latch_mode() {
     assert_eq!(
         session.handle(SwitchingEvent::Enter),
         SessionEffect::Activate(WindowId::from("previous"))
+    );
+}
+
+#[test]
+fn arrow_navigation_moves_spatially_without_crossing_grid_edges() {
+    let mut session = SwitchingSession::new(
+        (0..7).map(|index| WindowId::from(format!("window-{index}"))),
+        InvocationDirection::Next,
+        HoldModifiers::empty(),
+    )
+    .expect("seven Windows can start a Switching Session");
+
+    assert_eq!(session.selected(), &WindowId::from("window-1"));
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Right,
+            columns: 3,
+        }),
+        SessionEffect::SelectionChanged(WindowId::from("window-2"))
+    );
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Right,
+            columns: 3,
+        }),
+        SessionEffect::None
+    );
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Down,
+            columns: 3,
+        }),
+        SessionEffect::SelectionChanged(WindowId::from("window-5"))
+    );
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Down,
+            columns: 3,
+        }),
+        SessionEffect::None
+    );
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Left,
+            columns: 3,
+        }),
+        SessionEffect::SelectionChanged(WindowId::from("window-4"))
+    );
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Up,
+            columns: 3,
+        }),
+        SessionEffect::SelectionChanged(WindowId::from("window-1"))
+    );
+}
+
+#[test]
+fn arrow_navigation_normalizes_an_unavailable_column_count() {
+    let mut session = two_window_session();
+
+    assert_eq!(
+        session.handle(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Up,
+            columns: 0,
+        }),
+        SessionEffect::SelectionChanged(WindowId::from("focused"))
     );
 }

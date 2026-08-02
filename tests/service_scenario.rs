@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use cosmic_window_switcher::{
-    CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, HoldModifiers,
-    InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect, ServiceEvent,
-    SessionDisplay, SwitcherGrid, SwitcherItem, SwitcherService, WindowEvent, WindowId,
-    WindowScope, WindowSnapshot, WorkspaceEligibilityState, WorkspaceGroupSnapshot, WorkspaceId,
-    WorkspaceSnapshot,
+    CaptureEffect, CaptureSessionModel, CardSize, DesktopSnapshot, GridNavigationDirection,
+    HoldModifiers, InvocationDirection, InvocationRequest, RefreshCeiling, ServiceEffect,
+    ServiceEvent, SessionDisplay, SwitcherGrid, SwitcherItem, SwitcherService, SwitchingEvent,
+    WindowEvent, WindowId, WindowScope, WindowSnapshot, WorkspaceEligibilityState,
+    WorkspaceGroupSnapshot, WorkspaceId, WorkspaceSnapshot,
 };
 
 fn window(id: &str) -> WindowId {
@@ -205,6 +205,32 @@ fn repeated_invocations_move_in_their_requested_direction() {
     assert_eq!(
         service.handle(ServiceEvent::Invocation(InvocationDirection::Previous)),
         vec![ServiceEffect::SelectionChanged(window("previous"))]
+    );
+}
+
+#[test]
+fn spatial_keyboard_navigation_updates_the_active_service_selection() {
+    let mut service = service_with_mru_order(&[
+        "window-0", "window-1", "window-2", "window-3", "window-4", "window-5",
+    ]);
+    service.invoke(InvocationRequest {
+        direction: InvocationDirection::Next,
+        initial_hold_modifiers: HoldModifiers::ALT,
+    });
+
+    assert_eq!(
+        service.handle(ServiceEvent::Switching(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Right,
+            columns: 3,
+        })),
+        vec![ServiceEffect::SelectionChanged(window("window-2"))]
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::Switching(SwitchingEvent::NavigateGrid {
+            direction: GridNavigationDirection::Down,
+            columns: 3,
+        })),
+        vec![ServiceEffect::SelectionChanged(window("window-5"))]
     );
 }
 
