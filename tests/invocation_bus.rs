@@ -41,6 +41,8 @@ fn unique_test_directory(name: &str) -> PathBuf {
 
 fn run_isolated_test(scenario: &str, extra_environment: &[(&str, &Path)]) -> ExitStatus {
     let current_test = env::current_exe().expect("resolve the integration test executable");
+    let lifecycle_directory = unique_test_directory("invocation-lifecycle");
+    fs::create_dir_all(&lifecycle_directory).expect("create isolated lifecycle directory");
     let test_name = thread::current()
         .name()
         .expect("the Rust test harness names test threads")
@@ -52,7 +54,11 @@ fn run_isolated_test(scenario: &str, extra_environment: &[(&str, &Path)]) -> Exi
         .arg("--exact")
         .arg(test_name)
         .arg("--nocapture")
-        .env(SCENARIO_ENV, scenario);
+        .env(SCENARIO_ENV, scenario)
+        .env("XDG_CURRENT_DESKTOP", "COSMIC")
+        .env("XDG_SESSION_TYPE", "wayland")
+        .env("XDG_CONFIG_HOME", lifecycle_directory.join("config"))
+        .env("XDG_STATE_HOME", lifecycle_directory.join("state"));
     for (name, value) in extra_environment {
         command.env(name, value);
     }

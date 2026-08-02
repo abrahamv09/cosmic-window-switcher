@@ -16,6 +16,13 @@
 - [x] `status` and `doctor` report service, capability, Capture Backend, MRU Warm-up, and shortcut-ownership state without private Window data.
 - [x] GNOME, Ubuntu, Xorg, and other non-COSMIC sessions are rejected without starting the service or changing shortcuts.
 
+## Answer
+
+COSMIC Window Switcher now has an explicit, reversible integration lifecycle.
+It owns only the two semantic switching commands while their values match its
+installed invocations, leaves COSMIC Settings in control of key assignments,
+and returns safely to stock behavior without overwriting subsequent user edits.
+
 ## Comments
 
 - Added explicit `enable` and `disable` commands backed by an atomic lifecycle
@@ -35,15 +42,18 @@
   sessions before D-Bus activation, stock fallback, service control, or shortcut
   writes.
 - The lifecycle sandbox covers existing and absent prior values, untouched key
-  bindings, interrupted enablement rollback, later manual edits, repeated
-  enable/disable, absent-service diagnostics, direct fallback isolation, and
-  unsupported-session rejection.
+  bindings, interrupted journal recovery through both service startup and the
+  next invocation, incomplete compensating-operation retries, later manual
+  edits, repeated enable/disable, upgrade state, uninstall cleanup without a
+  graphical-session environment, isolated D-Bus diagnostics, modeled service
+  state, direct fallback isolation, and unsupported-session rejection.
+- The two-axis review identified incomplete crash recovery, no uninstall-safe
+  entry point, premature capability readiness, insufficient sandbox isolation,
+  and three lifecycle code smells. The implementation now recovers pending
+  journals before invocation or service ownership, retains the journal whenever
+  compensation is incomplete, provides ownership-safe `disable --uninstall`,
+  claims D-Bus only after compositor synchronization, reads shortcut ownership
+  even outside COSMIC, models service state in tests, types service operations,
+  consolidates rollback, and removes the re-export-only module.
 - Verification passed formatting, all-target type checking, strict
-  all-target/all-feature Clippy, all 116 tests, and an optimized release build.
-
-## Answer
-
-COSMIC Window Switcher now has an explicit, reversible integration lifecycle.
-It owns only the two semantic switching commands while their values match its
-installed invocations, leaves COSMIC Settings in control of key assignments,
-and returns safely to stock behavior without overwriting subsequent user edits.
+  all-target/all-feature Clippy, all 120 tests, and an optimized release build.

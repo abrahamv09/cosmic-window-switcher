@@ -84,19 +84,21 @@ const INTERFACE_NAME: &str = "io.github.abrahamv09.CosmicWindowSwitcher1";
 
 pub fn run() -> Result<()> {
     crate::cosmic_session::verify("Switcher Service")?;
+    if !crate::lifecycle::prepare_service_start()? {
+        return Ok(());
+    }
 
     let service = Arc::new(RwLock::new(SwitcherService::new()));
     let pending_invocations = Arc::new(WakeQueue::new()?);
     let pending_lifecycle_events = Arc::new(WakeQueue::new()?);
     let _lifecycle_monitor = session_lifecycle::monitor(Arc::clone(&pending_lifecycle_events))?;
-    let _bus_connection =
-        diagnostics::serve(Arc::clone(&service), Arc::clone(&pending_invocations))?;
     let mut window_observer = window_observer::WindowObserver::connect(
         Arc::clone(&service),
-        pending_invocations,
+        Arc::clone(&pending_invocations),
         pending_lifecycle_events,
     )?;
     window_observer.synchronize_initial_windows()?;
+    let _bus_connection = diagnostics::serve(Arc::clone(&service), pending_invocations)?;
 
     loop {
         if let Err(error) = window_observer.dispatch() {
@@ -116,4 +118,8 @@ pub fn running() -> bool {
 
 pub fn invoke(direction: InvocationDirection) -> Result<()> {
     invocation::invoke(direction)
+}
+
+pub fn fallback(direction: InvocationDirection) -> Result<()> {
+    invocation::launch_stock_switcher(direction)
 }

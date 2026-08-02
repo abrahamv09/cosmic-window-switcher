@@ -121,6 +121,10 @@ command only while its current value still matches the app-owned invocation.
 Manual command edits made after enablement are left intact. Repeating either
 lifecycle command is safe. GNOME, Ubuntu, Xorg, and other non-COSMIC sessions
 are rejected before the service or shortcut configuration is touched.
+The package-removal workflow can call the internal
+`disable --uninstall` cleanup path without a graphical-session environment; it
+applies the same ownership checks and treats service shutdown as best effort so
+shortcut restoration is not skipped during removal.
 
 ## Configure the switcher
 

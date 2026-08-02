@@ -35,6 +35,35 @@ fn lifecycle_command(sandbox: &TempDir, command: &str) -> Command {
         .env(
             "COSMIC_WINDOW_SWITCHER_TEST_SYSTEMCTL_LOG",
             sandbox.path().join("systemctl.log"),
+        )
+        .env(
+            "COSMIC_WINDOW_SWITCHER_TEST_SERVICE_STATE",
+            sandbox.path().join("service.state"),
+        );
+    process
+}
+
+fn isolated_bus_command(sandbox: &TempDir, command: &str) -> Command {
+    let mut process = Command::new("dbus-run-session");
+    process
+        .arg("--")
+        .arg(binary())
+        .arg(command)
+        .env("XDG_CURRENT_DESKTOP", "COSMIC")
+        .env("XDG_SESSION_TYPE", "wayland")
+        .env("XDG_CONFIG_HOME", sandbox.path().join("config"))
+        .env("XDG_STATE_HOME", sandbox.path().join("state"))
+        .env(
+            "COSMIC_WINDOW_SWITCHER_SYSTEMCTL",
+            fixture("record-systemctl.sh"),
+        )
+        .env(
+            "COSMIC_WINDOW_SWITCHER_TEST_SYSTEMCTL_LOG",
+            sandbox.path().join("systemctl.log"),
+        )
+        .env(
+            "COSMIC_WINDOW_SWITCHER_TEST_SERVICE_STATE",
+            sandbox.path().join("service.state"),
         );
     process
 }
@@ -72,6 +101,23 @@ fn seed_shortcuts(sandbox: &TempDir) {
     .expect("seed user key bindings");
 }
 
+fn seed_interrupted_enablement(sandbox: &TempDir) {
+    seed_shortcuts(sandbox);
+    let shortcuts = fs::read_to_string(shortcut_file(sandbox))
+        .expect("read prior commands")
+        .replace("prior-next", NEXT_COMMAND)
+        .replace("prior-previous", PREVIOUS_COMMAND);
+    fs::write(shortcut_file(sandbox), shortcuts).expect("simulate interrupted shortcut write");
+    let state_path = lifecycle_file(sandbox);
+    fs::create_dir_all(state_path.parent().expect("lifecycle state has a parent"))
+        .expect("create lifecycle state directory");
+    fs::write(
+        state_path,
+        "Enabling((next: Some(\"prior-next\"), previous: Some(\"prior-previous\")))\n",
+    )
+    .expect("simulate pending enablement journal");
+}
+
 #[test]
 fn enable_and_disable_restore_owned_values_without_touching_key_bindings() {
     let sandbox = TempDir::new().expect("create lifecycle sandbox");
@@ -93,7 +139,12 @@ fn enable_and_disable_restore_owned_values_without_touching_key_bindings() {
     assert!(lifecycle_file(&sandbox).is_file());
     assert_eq!(
         fs::read_to_string(sandbox.path().join("systemctl.log")).expect("read service command"),
-        "--user enable --now cosmic-window-switcher.service\n"
+        "--user enable cosmic-window-switcher.service\n--user start cosmic-window-switcher.service\n"
+    );
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("service.state"))
+            .expect("read enabled service state"),
+        "active\n"
     );
 
     let disabled = lifecycle_command(&sandbox, "disable")
@@ -111,6 +162,11 @@ fn enable_and_disable_restore_owned_values_without_touching_key_bindings() {
         fs::read_to_string(sandbox.path().join("systemctl.log"))
             .expect("read service commands")
             .ends_with("--user disable --now cosmic-window-switcher.service\n")
+    );
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("service.state"))
+            .expect("read disabled service state"),
+        "inactive\n"
     );
 }
 
@@ -138,7 +194,7 @@ fn disable_removes_app_commands_that_had_no_prior_user_values() {
 }
 
 #[test]
-fn repeated_operations_preserve_manual_edits_after_enablement() {
+fn upgrade_and_repeated_operations_preserve_manual_edits_after_enablement() {
     let sandbox = TempDir::new().expect("create lifecycle sandbox");
     seed_shortcuts(&sandbox);
     assert!(
@@ -147,7 +203,6 @@ fn repeated_operations_preserve_manual_edits_after_enablement() {
             .expect("enable integration")
             .success()
     );
-
     let path = shortcut_file(&sandbox);
     let manually_edited = fs::read_to_string(&path)
         .expect("read enabled commands")
@@ -185,6 +240,92 @@ fn repeated_operations_preserve_manual_edits_after_enablement() {
 }
 
 #[test]
+fn interrupted_enablement_journal_recovers_before_the_next_invocation() {
+    let sandbox = TempDir::new().expect("create lifecycle sandbox");
+    seed_interrupted_enablement(&sandbox);
+
+    let fallback_log = sandbox.path().join("fallback.log");
+    let status = isolated_bus_command(&sandbox, "invoke")
+        .arg("previous")
+        .env(
+            "COSMIC_WINDOW_SWITCHER_STOCK_LAUNCHER",
+            fixture("record-stock-launcher.sh"),
+        )
+        .env("COSMIC_WINDOW_SWITCHER_TEST_FALLBACK_LOG", &fallback_log)
+        .status()
+        .expect("invoke after interrupted enablement");
+
+    assert!(status.success());
+    let restored = fs::read_to_string(shortcut_file(&sandbox)).expect("read recovered commands");
+    assert!(restored.contains("prior-next"));
+    assert!(restored.contains("prior-previous"));
+    assert!(!restored.contains(NEXT_COMMAND));
+    assert!(!restored.contains(PREVIOUS_COMMAND));
+    assert_eq!(
+        fs::read_to_string(fallback_log).expect("read stock fallback direction"),
+        "shift-alt-tab\n"
+    );
+}
+
+#[test]
+fn service_start_recovers_an_interrupted_enablement_before_claiming_dbus() {
+    let sandbox = TempDir::new().expect("create lifecycle sandbox");
+    seed_interrupted_enablement(&sandbox);
+
+    let status = isolated_bus_command(&sandbox, "service")
+        .status()
+        .expect("start service with pending journal");
+
+    assert!(status.success());
+    let restored = fs::read_to_string(shortcut_file(&sandbox)).expect("read recovered commands");
+    assert!(restored.contains("prior-next"));
+    assert!(restored.contains("prior-previous"));
+    assert!(!restored.contains(NEXT_COMMAND));
+    assert!(!restored.contains(PREVIOUS_COMMAND));
+    assert!(
+        fs::read_to_string(lifecycle_file(&sandbox))
+            .expect("read recovered lifecycle state")
+            .contains("Disabled")
+    );
+    assert!(
+        fs::read_to_string(sandbox.path().join("systemctl.log"))
+            .expect("read recovery service control")
+            .contains("--user disable cosmic-window-switcher.service")
+    );
+}
+
+#[test]
+fn uninstall_cleanup_restores_owned_values_without_a_cosmic_session() {
+    let sandbox = TempDir::new().expect("create lifecycle sandbox");
+    seed_shortcuts(&sandbox);
+    assert!(
+        lifecycle_command(&sandbox, "enable")
+            .status()
+            .expect("enable integration")
+            .success()
+    );
+    let shortcut_path = shortcut_file(&sandbox);
+    let manually_edited = fs::read_to_string(&shortcut_path)
+        .expect("read enabled commands")
+        .replace(NEXT_COMMAND, "manual-next");
+    fs::write(&shortcut_path, manually_edited).expect("edit command before uninstall");
+
+    let status = lifecycle_command(&sandbox, "disable")
+        .arg("--uninstall")
+        .env("XDG_CURRENT_DESKTOP", "")
+        .env("XDG_SESSION_TYPE", "")
+        .status()
+        .expect("run uninstall cleanup outside COSMIC");
+
+    assert!(status.success());
+    let restored = fs::read_to_string(shortcut_path).expect("read uninstalled commands");
+    assert!(restored.contains("manual-next"));
+    assert!(restored.contains("prior-previous"));
+    assert!(!restored.contains(NEXT_COMMAND));
+    assert!(!restored.contains(PREVIOUS_COMMAND));
+}
+
+#[test]
 fn failed_service_enablement_rolls_back_both_semantic_commands() {
     let sandbox = TempDir::new().expect("create lifecycle sandbox");
     seed_shortcuts(&sandbox);
@@ -200,6 +341,23 @@ fn failed_service_enablement_rolls_back_both_semantic_commands() {
     assert!(restored.contains("prior-previous"));
     assert!(!restored.contains(NEXT_COMMAND));
     assert!(!restored.contains(PREVIOUS_COMMAND));
+    assert!(
+        fs::read_to_string(lifecycle_file(&sandbox))
+            .expect("read retained recovery journal")
+            .contains("Enabling")
+    );
+
+    assert!(
+        lifecycle_command(&sandbox, "disable")
+            .status()
+            .expect("retry rollback")
+            .success()
+    );
+    assert!(
+        fs::read_to_string(lifecycle_file(&sandbox))
+            .expect("read completed recovery state")
+            .contains("Disabled")
+    );
 }
 
 #[test]
@@ -244,7 +402,7 @@ fn status_and_doctor_report_privacy_safe_lifecycle_health() {
     let sandbox = TempDir::new().expect("create lifecycle sandbox");
 
     for command in ["status", "doctor"] {
-        let output = lifecycle_command(&sandbox, command)
+        let output = isolated_bus_command(&sandbox, command)
             .output()
             .expect("inspect lifecycle health");
         assert!(output.status.success());
@@ -257,4 +415,21 @@ fn status_and_doctor_report_privacy_safe_lifecycle_health() {
         assert!(!report.contains("Window title"));
         assert!(!report.contains("pixel"));
     }
+}
+
+#[test]
+fn unsupported_status_still_reports_existing_shortcut_ownership() {
+    let sandbox = TempDir::new().expect("create lifecycle sandbox");
+    seed_interrupted_enablement(&sandbox);
+
+    let output = lifecycle_command(&sandbox, "status")
+        .env("XDG_CURRENT_DESKTOP", "GNOME")
+        .env("XDG_SESSION_TYPE", "x11")
+        .output()
+        .expect("inspect unsupported-session health");
+
+    assert!(output.status.success());
+    let report = String::from_utf8(output.stdout).expect("diagnostics are UTF-8");
+    assert!(report.contains("session: unsupported"));
+    assert!(report.contains("shortcut_ownership: owned"));
 }

@@ -22,7 +22,10 @@ struct Cli {
 enum Command {
     Service,
     Enable,
-    Disable,
+    Disable {
+        #[arg(long, hide = true)]
+        uninstall: bool,
+    },
     Status,
     Doctor,
     Settings,
@@ -75,7 +78,7 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Service => service::run(),
         Command::Enable => lifecycle::enable(),
-        Command::Disable => lifecycle::disable(),
+        Command::Disable { uninstall } => lifecycle::disable(uninstall),
         Command::Status | Command::Doctor => {
             println!("{}", lifecycle::diagnostics(locale)?);
             Ok(())
@@ -83,7 +86,12 @@ fn main() -> Result<()> {
         Command::Settings => settings::run(),
         Command::Invoke { direction } => {
             cosmic_session::verify("Window switch invocation")?;
-            service::invoke(direction.into())
+            let direction = direction.into();
+            if lifecycle::recover_before_invocation()? {
+                service::fallback(direction)
+            } else {
+                service::invoke(direction)
+            }
         }
         Command::Probe {
             include_titles,

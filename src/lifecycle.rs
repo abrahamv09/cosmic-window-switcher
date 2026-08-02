@@ -41,13 +41,21 @@ enum ShortcutOwnership {
     Unavailable,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ServiceOperation {
+    Enable,
+    Start,
+    Disable,
+    DisableWithoutStopping,
+}
+
 pub(super) fn enable() -> Result<()> {
     crate::cosmic_session::verify("integration lifecycle")?;
     let state_store = state_store()?;
     let state = recover_interrupted_enable(&state_store, load_state(&state_store)?)?;
 
     if matches!(state, IntegrationState::Enabled(_)) {
-        return control_service("enable");
+        return activate_service();
     }
 
     let shortcut_context = shortcut_context()?;
@@ -67,29 +75,26 @@ pub(super) fn enable() -> Result<()> {
         return Err(shortcut_error);
     }
 
-    if let Err(service_error) = control_service("enable") {
-        let _service_rollback = control_service("disable");
-        rollback_enable(&state_store, &shortcut_context, &previous).with_context(|| {
-            format!("roll back semantic commands after service enablement failed: {service_error}")
-        })?;
-        return Err(service_error);
+    if let Err(service_error) = control_service(ServiceOperation::Enable) {
+        return fail_enablement(service_error, &state_store, &shortcut_context, &previous);
     }
 
     if let Err(state_error) = save_state(&state_store, &IntegrationState::Enabled(previous.clone()))
     {
-        let _service_rollback = control_service("disable");
-        rollback_enable(&state_store, &shortcut_context, &previous).with_context(|| {
-            format!(
-                "roll back integration after its enabled state could not be saved: {state_error}"
-            )
-        })?;
-        return Err(state_error);
+        return fail_enablement(state_error, &state_store, &shortcut_context, &previous);
+    }
+
+    if let Err(service_error) = control_service(ServiceOperation::Start) {
+        return fail_enablement(service_error, &state_store, &shortcut_context, &previous);
     }
 
     Ok(())
 }
 
-pub(super) fn disable() -> Result<()> {
+pub(super) fn disable(for_uninstall: bool) -> Result<()> {
+    if for_uninstall {
+        return disable_for_uninstall();
+    }
     crate::cosmic_session::verify("integration lifecycle")?;
     let state_store = state_store()?;
     let state = recover_interrupted_enable(&state_store, load_state(&state_store)?)?;
@@ -98,7 +103,7 @@ pub(super) fn disable() -> Result<()> {
         IntegrationState::Enabled(previous) => Some(previous),
         IntegrationState::Disabled | IntegrationState::Enabling(_) => None,
     };
-    control_service("disable")?;
+    control_service(ServiceOperation::Disable)?;
 
     if let Some(previous) = previous {
         let shortcut_context = shortcut_context()?;
@@ -107,13 +112,29 @@ pub(super) fn disable() -> Result<()> {
     save_state(&state_store, &IntegrationState::Disabled)
 }
 
+pub(super) fn recover_before_invocation() -> Result<bool> {
+    let state_store = state_store()?;
+    let state = load_state(&state_store)?;
+    let interrupted = matches!(state, IntegrationState::Enabling(_));
+    let _recovered = recover_interrupted_enable(&state_store, state)?;
+    Ok(interrupted)
+}
+
+pub(super) fn prepare_service_start() -> Result<bool> {
+    let state_store = state_store()?;
+    let IntegrationState::Enabling(previous) = load_state(&state_store)? else {
+        return Ok(true);
+    };
+    let shortcut_context = shortcut_context()?;
+    restore_owned_commands(&shortcut_context, &previous)?;
+    control_service(ServiceOperation::DisableWithoutStopping)?;
+    save_state(&state_store, &IntegrationState::Disabled)?;
+    Ok(false)
+}
+
 pub(super) fn diagnostics(locale: Locale) -> Result<String> {
     let compatible = crate::cosmic_session::is_compatible();
-    let ownership = if compatible {
-        shortcut_ownership().unwrap_or(ShortcutOwnership::Unavailable)
-    } else {
-        ShortcutOwnership::NotOwned
-    };
+    let ownership = shortcut_ownership().unwrap_or(ShortcutOwnership::Unavailable);
     let mut lines = vec![localized_status(
         locale,
         StringKey::Session,
@@ -124,7 +145,7 @@ pub(super) fn diagnostics(locale: Locale) -> Result<String> {
         },
     )];
 
-    if compatible && service::running() {
+    if compatible && crate::service::running() {
         lines.push(localized_status(
             locale,
             StringKey::Capabilities,
@@ -135,7 +156,7 @@ pub(super) fn diagnostics(locale: Locale) -> Result<String> {
             StringKey::ShortcutOwnership,
             ownership.key(),
         ));
-        lines.push(service::status()?.localized(locale));
+        lines.push(crate::service::status()?.localized(locale));
     } else {
         lines.extend([
             localized_status(locale, StringKey::Service, StringKey::Stopped),
@@ -157,19 +178,73 @@ fn recover_interrupted_enable(
         return Ok(state);
     };
     let shortcut_context = shortcut_context()?;
-    restore_owned_commands(&shortcut_context, &previous)?;
-    let _service_rollback = control_service("disable");
+    let service_rollback = control_service(ServiceOperation::Disable);
+    let configuration_rollback = restore_owned_commands(&shortcut_context, &previous);
+    match (service_rollback, configuration_rollback) {
+        (Ok(()), Ok(())) => {}
+        (Err(service_error), Ok(())) => {
+            return Err(service_error).context("finish interrupted service rollback");
+        }
+        (Ok(()), Err(configuration_error)) => {
+            return Err(configuration_error)
+                .context("finish interrupted semantic-command rollback");
+        }
+        (Err(service_error), Err(configuration_error)) => {
+            return Err(service_error).context(format!(
+                "finish interrupted rollback after semantic-command recovery also failed: {configuration_error}"
+            ));
+        }
+    }
     save_state(state_store, &IntegrationState::Disabled)?;
     Ok(IntegrationState::Disabled)
 }
 
-fn rollback_enable(
+fn disable_for_uninstall() -> Result<()> {
+    let state_store = state_store()?;
+    let previous = match load_state(&state_store)? {
+        IntegrationState::Enabling(previous) | IntegrationState::Enabled(previous) => {
+            Some(previous)
+        }
+        IntegrationState::Disabled => None,
+    };
+    if let Some(previous) = previous {
+        let shortcut_context = shortcut_context()?;
+        restore_owned_commands(&shortcut_context, &previous)?;
+    }
+    save_state(&state_store, &IntegrationState::Disabled)?;
+    let _service_cleanup = control_service(ServiceOperation::Disable);
+    Ok(())
+}
+
+fn fail_enablement(
+    enable_error: anyhow::Error,
     state_store: &Config,
     shortcut_context: &Config,
     previous: &PreviousCommands,
 ) -> Result<()> {
-    restore_owned_commands(shortcut_context, previous)?;
-    save_state(state_store, &IntegrationState::Disabled)
+    let service_rollback = control_service(ServiceOperation::Disable);
+    let configuration_rollback = restore_owned_commands(shortcut_context, previous);
+    let mut rollback_failures = Vec::new();
+    if let Err(error) = service_rollback {
+        rollback_failures.push(format!("service rollback failed: {error}"));
+    }
+    if let Err(error) = configuration_rollback {
+        rollback_failures.push(format!("semantic-command rollback failed: {error}"));
+    }
+    if rollback_failures.is_empty()
+        && let Err(error) = save_state(state_store, &IntegrationState::Disabled)
+    {
+        rollback_failures.push(format!("clearing the lifecycle journal failed: {error}"));
+    }
+    if rollback_failures.is_empty() {
+        return Err(enable_error);
+    }
+
+    if let Err(error) = save_state(state_store, &IntegrationState::Enabling(previous.clone())) {
+        rollback_failures.push(format!("preserving the recovery journal failed: {error}"));
+    }
+    Err(enable_error)
+        .with_context(|| format!("rollback incomplete: {}", rollback_failures.join("; ")))
 }
 
 fn restore_owned_commands(context: &Config, previous: &PreviousCommands) -> Result<()> {
@@ -260,17 +335,45 @@ fn save_state(store: &Config, state: &IntegrationState) -> Result<()> {
         .context("atomically save integration lifecycle state")
 }
 
-fn control_service(operation: &str) -> Result<()> {
+fn control_service(operation: ServiceOperation) -> Result<()> {
     let executable = std::env::var_os(SYSTEMCTL_OVERRIDE)
         .map_or_else(|| PathBuf::from(SYSTEMCTL), PathBuf::from);
+    let arguments = operation.arguments();
     let status = Command::new(&executable)
-        .args(["--user", operation, "--now", SERVICE_UNIT])
+        .args(arguments)
         .status()
         .with_context(|| format!("run {} for {SERVICE_UNIT}", executable.display()))?;
     if !status.success() {
-        anyhow::bail!("{operation} {SERVICE_UNIT} failed with status {status}");
+        anyhow::bail!(
+            "{} {SERVICE_UNIT} failed with status {status}",
+            operation.name()
+        );
     }
     Ok(())
+}
+
+fn activate_service() -> Result<()> {
+    control_service(ServiceOperation::Enable)?;
+    control_service(ServiceOperation::Start)
+}
+
+impl ServiceOperation {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Enable => "enable",
+            Self::Start => "start",
+            Self::Disable | Self::DisableWithoutStopping => "disable",
+        }
+    }
+
+    const fn arguments(self) -> &'static [&'static str] {
+        match self {
+            Self::Enable => &["--user", "enable", SERVICE_UNIT],
+            Self::Start => &["--user", "start", SERVICE_UNIT],
+            Self::Disable => &["--user", "disable", "--now", SERVICE_UNIT],
+            Self::DisableWithoutStopping => &["--user", "disable", SERVICE_UNIT],
+        }
+    }
 }
 
 fn localized_status(locale: Locale, label: StringKey, value: StringKey) -> String {
@@ -286,8 +389,4 @@ impl ShortcutOwnership {
             Self::Unavailable => StringKey::Unavailable,
         }
     }
-}
-
-mod service {
-    pub(super) use crate::service::{running, status};
 }
