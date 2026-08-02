@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{collections::BTreeMap, path::PathBuf, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs::{File, OpenOptions},
+    path::PathBuf,
+    process::Command,
+};
 
 use anyhow::{Context, Result};
 use cosmic_config::{Config, ConfigGet, ConfigSet};
@@ -9,6 +14,7 @@ use cosmic_settings_config::shortcuts::{
     action::System::{self, WindowSwitcher, WindowSwitcherPrevious},
 };
 use cosmic_window_switcher::{APPLICATION_ID, Locale, StringKey};
+use rustix::fs::{FlockOperation, flock};
 use serde::{Deserialize, Serialize};
 
 const STATE_VERSION: u64 = 1;
@@ -49,8 +55,13 @@ enum ServiceOperation {
     DisableWithoutStopping,
 }
 
+struct LifecycleLock {
+    _file: File,
+}
+
 pub(super) fn enable() -> Result<()> {
     crate::cosmic_session::verify("integration lifecycle")?;
+    let _lock = LifecycleLock::acquire()?;
     let state_store = state_store()?;
     let state = recover_interrupted_enable(&state_store, load_state(&state_store)?)?;
 
@@ -92,10 +103,13 @@ pub(super) fn enable() -> Result<()> {
 }
 
 pub(super) fn disable(for_uninstall: bool) -> Result<()> {
+    if !for_uninstall {
+        crate::cosmic_session::verify("integration lifecycle")?;
+    }
+    let _lock = LifecycleLock::acquire()?;
     if for_uninstall {
         return disable_for_uninstall();
     }
-    crate::cosmic_session::verify("integration lifecycle")?;
     let state_store = state_store()?;
     let state = recover_interrupted_enable(&state_store, load_state(&state_store)?)?;
 
@@ -113,6 +127,7 @@ pub(super) fn disable(for_uninstall: bool) -> Result<()> {
 }
 
 pub(super) fn recover_before_invocation() -> Result<bool> {
+    let _lock = LifecycleLock::acquire()?;
     let state_store = state_store()?;
     let state = load_state(&state_store)?;
     let interrupted = matches!(state, IntegrationState::Enabling(_));
@@ -122,6 +137,10 @@ pub(super) fn recover_before_invocation() -> Result<bool> {
 
 pub(super) fn prepare_service_start() -> Result<bool> {
     let state_store = state_store()?;
+    if !matches!(load_state(&state_store)?, IntegrationState::Enabling(_)) {
+        return Ok(true);
+    }
+    let _lock = LifecycleLock::acquire()?;
     let IntegrationState::Enabling(previous) = load_state(&state_store)? else {
         return Ok(true);
     };
@@ -388,5 +407,34 @@ impl ShortcutOwnership {
             Self::NotOwned => StringKey::NotOwned,
             Self::Unavailable => StringKey::Unavailable,
         }
+    }
+}
+
+impl LifecycleLock {
+    fn acquire() -> Result<Self> {
+        let state_home = std::env::var_os("XDG_STATE_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .filter(|value| !value.is_empty())
+                    .map(|home| PathBuf::from(home).join(".local/state"))
+            })
+            .context("locate the user state directory for lifecycle locking")?;
+        let directory = state_home
+            .join("cosmic")
+            .join(APPLICATION_ID)
+            .join(format!("v{STATE_VERSION}"));
+        std::fs::create_dir_all(&directory).context("create lifecycle lock directory")?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(directory.join("integration.lock"))
+            .context("open integration lifecycle lock")?;
+        flock(&file, FlockOperation::LockExclusive)
+            .context("wait for another lifecycle operation to finish")?;
+        Ok(Self { _file: file })
     }
 }

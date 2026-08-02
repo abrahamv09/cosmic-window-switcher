@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    thread,
+    time::{Duration, Instant},
+};
 
 use tempfile::TempDir;
 
@@ -208,6 +214,8 @@ fn upgrade_and_repeated_operations_preserve_manual_edits_after_enablement() {
         .expect("read enabled commands")
         .replace(NEXT_COMMAND, "manual-next");
     fs::write(&path, manually_edited).expect("edit the forward semantic command");
+    fs::write(sandbox.path().join("service.state"), "inactive\n")
+        .expect("model the user unit stopping during package upgrade");
 
     assert!(
         lifecycle_command(&sandbox, "enable")
@@ -219,6 +227,11 @@ fn upgrade_and_repeated_operations_preserve_manual_edits_after_enablement() {
         fs::read_to_string(&path)
             .expect("read commands after repeated enablement")
             .contains("manual-next")
+    );
+    assert_eq!(
+        fs::read_to_string(sandbox.path().join("service.state"))
+            .expect("read service state after upgrade re-enable"),
+        "active\n"
     );
 
     assert!(
@@ -237,6 +250,50 @@ fn upgrade_and_repeated_operations_preserve_manual_edits_after_enablement() {
     assert!(restored.contains("manual-next"));
     assert!(restored.contains("prior-previous"));
     assert!(!restored.contains(PREVIOUS_COMMAND));
+}
+
+#[test]
+fn concurrent_lifecycle_commands_serialize_shortcut_and_service_state() {
+    let sandbox = TempDir::new().expect("create lifecycle sandbox");
+    seed_shortcuts(&sandbox);
+    let barrier = sandbox.path().join("enable-barrier");
+    let mut enabling = lifecycle_command(&sandbox, "enable");
+    enabling.env("COSMIC_WINDOW_SWITCHER_TEST_ENABLE_BARRIER", &barrier);
+    let mut enabling = enabling.spawn().expect("start paused enablement");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !barrier.with_extension("reached").exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        barrier.with_extension("reached").exists(),
+        "enablement never reached the service-control barrier"
+    );
+
+    let mut disabling = lifecycle_command(&sandbox, "disable")
+        .spawn()
+        .expect("start concurrent disablement");
+    thread::sleep(Duration::from_millis(50));
+    assert!(
+        disabling
+            .try_wait()
+            .expect("inspect concurrent disablement")
+            .is_none(),
+        "disablement bypassed the lifecycle lock"
+    );
+    fs::write(barrier.with_extension("release"), "release\n").expect("release paused enablement");
+
+    assert!(enabling.wait().expect("finish enablement").success());
+    assert!(disabling.wait().expect("finish disablement").success());
+    let restored = fs::read_to_string(shortcut_file(&sandbox)).expect("read serialized commands");
+    assert!(restored.contains("prior-next"));
+    assert!(restored.contains("prior-previous"));
+    assert!(!restored.contains(NEXT_COMMAND));
+    assert!(!restored.contains(PREVIOUS_COMMAND));
+    assert!(
+        fs::read_to_string(lifecycle_file(&sandbox))
+            .expect("read serialized lifecycle state")
+            .contains("Disabled")
+    );
 }
 
 #[test]

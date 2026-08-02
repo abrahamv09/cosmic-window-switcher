@@ -206,8 +206,11 @@ fn capture_backend(
     queue_handle: &QueueHandle<ProtocolObserver>,
     service: &SharedService,
 ) -> ShmCaptureState {
-    publish_capture_backend(service);
-    ShmCaptureState::new(globals, queue_handle)
+    let capture_backend = ShmCaptureState::new(globals, queue_handle);
+    if capture_backend.contract_available() {
+        publish_capture_backend(service);
+    }
+    capture_backend
 }
 
 impl WindowObserver {
@@ -339,6 +342,18 @@ impl WindowObserver {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         service.set_workspace_eligibility_state(workspace_eligibility);
         service.complete_initial_discovery();
+        Ok(())
+    }
+
+    pub(super) fn validate_required_capabilities(&self) -> Result<()> {
+        if !self.state.management_can_activate {
+            anyhow::bail!("the COSMIC Session does not advertise Window activation capability");
+        }
+        if !self.state.capture_backend.contract_available() {
+            anyhow::bail!(
+                "the COSMIC Session does not expose required shared-memory capture protocols"
+            );
+        }
         Ok(())
     }
 

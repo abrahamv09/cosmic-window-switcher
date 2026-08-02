@@ -98,6 +98,7 @@ pub fn run() -> Result<()> {
         pending_lifecycle_events,
     )?;
     window_observer.synchronize_initial_windows()?;
+    window_observer.validate_required_capabilities()?;
     let _bus_connection = diagnostics::serve(Arc::clone(&service), pending_invocations)?;
 
     loop {

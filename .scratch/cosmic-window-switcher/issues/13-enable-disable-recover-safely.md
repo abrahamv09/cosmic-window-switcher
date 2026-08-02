@@ -55,5 +55,14 @@ and returns safely to stock behavior without overwriting subsequent user edits.
   claims D-Bus only after compositor synchronization, reads shortcut ownership
   even outside COSMIC, models service state in tests, types service operations,
   consolidates rollback, and removes the re-export-only module.
+- The final Spec recheck found a remaining cross-process lifecycle race,
+  capability readiness that could be claimed before activation/capture contract
+  validation, and nominal upgrade coverage. Lifecycle mutations and interrupted
+  invocation recovery now share an advisory per-user lock that the kernel
+  releases on process death; service startup avoids the lock once the journal is
+  committed, preventing a systemd D-Bus startup deadlock. The service validates
+  advertised Window activation and required SHM capture protocols before taking
+  its bus name, and the upgrade scenario now models a replaced/stopped user unit
+  while persisted lifecycle and manual shortcut state survive.
 - Verification passed formatting, all-target type checking, strict
-  all-target/all-feature Clippy, all 120 tests, and an optimized release build.
+  all-target/all-feature Clippy, all 121 tests, and an optimized release build.
