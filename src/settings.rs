@@ -35,8 +35,11 @@ const REFRESH_CEILING_OPTIONS: [(RefreshCeiling, StringKey); 4] = [
     (RefreshCeiling::Fps60, StringKey::Fps60),
     (RefreshCeiling::MatchDisplay, StringKey::MatchDisplay),
 ];
-const REVEAL_DELAY_OPTIONS: [(RevealDelay, StringKey); 3] = [
-    (RevealDelay::Immediate, StringKey::Immediate),
+const REVEAL_DELAY_OPTIONS: [(RevealDelay, StringKey); 6] = [
+    (RevealDelay::Milliseconds20, StringKey::Milliseconds20),
+    (RevealDelay::Milliseconds40, StringKey::Milliseconds40),
+    (RevealDelay::Milliseconds60, StringKey::Milliseconds60),
+    (RevealDelay::Milliseconds80, StringKey::Milliseconds80),
     (RevealDelay::Milliseconds100, StringKey::Milliseconds100),
     (RevealDelay::Milliseconds200, StringKey::Milliseconds200),
 ];

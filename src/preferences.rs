@@ -28,7 +28,10 @@ impl Dimming {
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub enum RevealDelay {
-    Immediate,
+    Milliseconds20,
+    Milliseconds40,
+    Milliseconds60,
+    Milliseconds80,
     #[default]
     Milliseconds100,
     Milliseconds200,
@@ -38,7 +41,10 @@ impl RevealDelay {
     #[must_use]
     pub const fn duration(self) -> Duration {
         match self {
-            Self::Immediate => Duration::ZERO,
+            Self::Milliseconds20 => Duration::from_millis(20),
+            Self::Milliseconds40 => Duration::from_millis(40),
+            Self::Milliseconds60 => Duration::from_millis(60),
+            Self::Milliseconds80 => Duration::from_millis(80),
             Self::Milliseconds100 => Duration::from_millis(100),
             Self::Milliseconds200 => Duration::from_millis(200),
         }
@@ -282,8 +288,7 @@ impl PreferencesStore {
 
     fn legacy_reveal_delay(&self) -> Option<RevealDelay> {
         match self.read::<u32>("delay_ms")? {
-            0 => Some(RevealDelay::Immediate),
-            100 => Some(RevealDelay::Milliseconds100),
+            0 | 100 => Some(RevealDelay::Milliseconds100),
             200 => Some(RevealDelay::Milliseconds200),
             _ => None,
         }

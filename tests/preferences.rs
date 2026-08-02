@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use cosmic_config::{Config, ConfigGet, ConfigSet};
 use cosmic_window_switcher::{
     APPLICATION_ID, CardSize, Dimming, PreferencesStore, RefreshCeiling, RevealDelay,
     SwitcherPreferences,
 };
+use serde::Serialize;
+
+#[derive(Clone, Copy, Serialize)]
+enum RetiredRevealDelay {
+    Immediate,
+}
 
 fn isolated_store(test_name: &str) -> (tempfile::TempDir, PreferencesStore) {
     let directory = tempfile::Builder::new()
@@ -32,6 +38,34 @@ fn missing_preferences_load_the_documented_defaults() {
     assert_eq!(store.load().refresh_ceiling(), RefreshCeiling::Fps30);
     assert!(store.load().animations_enabled());
     assert_eq!(store.load().reveal_delay(), RevealDelay::Milliseconds100);
+}
+
+#[test]
+fn reveal_delay_choices_map_to_their_named_durations() {
+    assert_eq!(
+        RevealDelay::Milliseconds20.duration(),
+        Duration::from_millis(20)
+    );
+    assert_eq!(
+        RevealDelay::Milliseconds40.duration(),
+        Duration::from_millis(40)
+    );
+    assert_eq!(
+        RevealDelay::Milliseconds60.duration(),
+        Duration::from_millis(60)
+    );
+    assert_eq!(
+        RevealDelay::Milliseconds80.duration(),
+        Duration::from_millis(80)
+    );
+    assert_eq!(
+        RevealDelay::Milliseconds100.duration(),
+        Duration::from_millis(100)
+    );
+    assert_eq!(
+        RevealDelay::Milliseconds200.duration(),
+        Duration::from_millis(200)
+    );
 }
 
 #[test]
@@ -92,6 +126,17 @@ fn invalid_fields_recover_independently_without_rewriting_them() {
 }
 
 #[test]
+fn retired_immediate_reveal_delay_recovers_to_the_documented_default() {
+    let (_directory, store) = isolated_store("retired-immediate-reveal-delay");
+    store
+        .config()
+        .set("reveal_delay", RetiredRevealDelay::Immediate)
+        .expect("write the retired reveal delay");
+
+    assert_eq!(store.load().reveal_delay(), RevealDelay::Milliseconds100);
+}
+
+#[test]
 fn legacy_values_migrate_in_memory_and_are_written_only_after_save() {
     let (_directory, store) = isolated_store("legacy-preferences");
     store
@@ -124,7 +169,7 @@ fn legacy_values_migrate_in_memory_and_are_written_only_after_save() {
             Dimming::Off,
             RefreshCeiling::Fps60,
             false,
-            RevealDelay::Immediate,
+            RevealDelay::Milliseconds100,
         )
     );
     assert!(store.config().get_local::<CardSize>("card_size").is_err());
@@ -148,7 +193,7 @@ fn a_switching_session_keeps_the_preferences_snapshot_it_started_with() {
         Dimming::Off,
         RefreshCeiling::Fps15,
         false,
-        RevealDelay::Immediate,
+        RevealDelay::Milliseconds200,
     );
 
     assert_eq!(session.card_size(), CardSize::Medium);

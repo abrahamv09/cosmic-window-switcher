@@ -54,7 +54,7 @@ The switcher will obtain Window, output, capture, and management state through C
 38. As a user with an unsupported or protected Window, I want an icon-and-title fallback rather than losing that Window from MRU Order, so that switching still works.
 39. As a user, I want off, light, and strong background dimming choices, so that I can tune visual focus.
 40. As a motion-sensitive user, I want animations disabled when COSMIC reduced-motion policy requires it, so that the switcher respects my desktop accessibility choice.
-41. As a user, I want immediate, 100 ms, and 200 ms reveal-delay choices, so that I can tune quick switching versus accidental overlay flashes.
+41. As a user, I want 20, 40, 60, 80, 100, and 200 ms reveal-delay choices, so that I can tune quick switching versus accidental overlay flashes without a zero-delay animation race.
 42. As a user editing preferences, I want changes saved immediately but applied from the next Switching Session, so that an open grid never reflows beneath me.
 43. As a screen-reader user, I want semantic names, roles, positions, and selected state, so that I can navigate the switcher non-visually.
 44. As a high-contrast user, I want the switcher to follow COSMIC high-contrast state, so that its content remains readable.
