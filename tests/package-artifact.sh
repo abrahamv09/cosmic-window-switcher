@@ -36,6 +36,10 @@ work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 dpkg-deb --extract "$package" "$work/root"
 dpkg-deb --control "$package" "$work/control"
+dpkg-deb --raw-extract "$package" "$work/old-package-root"
+sed -i 's/^Version: .*/Version: 0.0.9-1/' "$work/old-package-root/DEBIAN/control"
+dpkg-deb --build "$work/old-package-root" "$work/cosmic-window-switcher_0.0.9-1_amd64.deb" >/dev/null
+old_package="$work/cosmic-window-switcher_0.0.9-1_amd64.deb"
 
 required_paths=(
     usr/bin/cosmic-window-switcher
@@ -96,23 +100,23 @@ dpkg_options=(
     --force-not-root,script-chrootless,depends
 )
 
-COSMIC_WINDOW_SWITCHER_GETENT="$work/bin/getent" \
-COSMIC_WINDOW_SWITCHER_RUNUSER="$work/bin/runuser" \
-COSMIC_WINDOW_SWITCHER_BINARY=/usr/bin/cosmic-window-switcher \
-    dpkg "${dpkg_options[@]}" --install "$package"
+package_dpkg() {
+    local runuser=$1
+    shift
+    COSMIC_WINDOW_SWITCHER_GETENT="$work/bin/getent" \
+    COSMIC_WINDOW_SWITCHER_RUNUSER="$runuser" \
+    COSMIC_WINDOW_SWITCHER_BINARY=/usr/bin/cosmic-window-switcher \
+        dpkg "${dpkg_options[@]}" "$@"
+}
+
+package_dpkg "$work/bin/runuser" --install "$old_package"
 [[ -x $work/dpkg-root/usr/bin/cosmic-window-switcher ]] || fail "isolated install omitted the executable"
 [[ ! -e $work/runuser.log ]] || fail "clean installation changed per-user integration"
 
-COSMIC_WINDOW_SWITCHER_GETENT="$work/bin/getent" \
-COSMIC_WINDOW_SWITCHER_RUNUSER="$work/bin/runuser" \
-COSMIC_WINDOW_SWITCHER_BINARY=/usr/bin/cosmic-window-switcher \
-    dpkg "${dpkg_options[@]}" --install "$package"
+package_dpkg "$work/bin/runuser" --install "$package"
 [[ ! -e $work/runuser.log ]] || fail "package upgrade disabled the integration"
 
-COSMIC_WINDOW_SWITCHER_GETENT="$work/bin/getent" \
-COSMIC_WINDOW_SWITCHER_RUNUSER="$work/bin/runuser" \
-COSMIC_WINDOW_SWITCHER_BINARY=/usr/bin/cosmic-window-switcher \
-    dpkg "${dpkg_options[@]}" --remove cosmic-window-switcher
+package_dpkg "$work/bin/runuser" --remove cosmic-window-switcher
 
 cleanup_call=$(cat "$work/runuser.log")
 contains "$cleanup_call" "alice"
@@ -121,10 +125,7 @@ contains "$cleanup_call" "/usr/bin/cosmic-window-switcher disable --uninstall"
 [[ ! -e $work/dpkg-root/usr/bin/cosmic-window-switcher ]] || fail "removal retained the executable"
 
 before_purge=$(wc -l <"$work/runuser.log")
-COSMIC_WINDOW_SWITCHER_GETENT="$work/bin/getent" \
-COSMIC_WINDOW_SWITCHER_RUNUSER="$work/bin/runuser" \
-COSMIC_WINDOW_SWITCHER_BINARY=/usr/bin/cosmic-window-switcher \
-    dpkg "${dpkg_options[@]}" --purge cosmic-window-switcher
+package_dpkg "$work/bin/runuser" --purge cosmic-window-switcher
 after_purge=$(wc -l <"$work/runuser.log")
 [[ $before_purge -eq $after_purge ]] || fail "purge repeated or broadened user cleanup"
 
@@ -133,18 +134,69 @@ cat >"$work/bin/runuser-fails" <<'EOF'
 exit 1
 EOF
 chmod +x "$work/bin/runuser-fails"
-COSMIC_WINDOW_SWITCHER_GETENT="$work/bin/getent" \
-COSMIC_WINDOW_SWITCHER_RUNUSER="$work/bin/runuser-fails" \
-COSMIC_WINDOW_SWITCHER_BINARY=/usr/bin/cosmic-window-switcher \
-    dpkg "${dpkg_options[@]}" --install "$package"
-if COSMIC_WINDOW_SWITCHER_GETENT="$work/bin/getent" \
-    COSMIC_WINDOW_SWITCHER_RUNUSER="$work/bin/runuser-fails" \
-    COSMIC_WINDOW_SWITCHER_BINARY=/usr/bin/cosmic-window-switcher \
-    dpkg "${dpkg_options[@]}" --remove cosmic-window-switcher
+package_dpkg "$work/bin/runuser-fails" --install "$package"
+if package_dpkg "$work/bin/runuser-fails" --remove cosmic-window-switcher
 then
     fail "removal succeeded after shortcut restoration failed"
 fi
 [[ -x $work/dpkg-root/usr/bin/cosmic-window-switcher ]] || \
     fail "failed removal did not retain the fallback-capable executable"
+
+mkdir -p \
+    "$work/custom-root/var/lib/dpkg" \
+    "$work/custom-home" \
+    "$work/custom-config/cosmic/com.system76.CosmicSettings.Shortcuts/v1" \
+    "$work/custom-state" \
+    "$work/custom-bin"
+: >"$work/custom-root/var/lib/dpkg/status"
+cat >"$work/custom-config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions" <<'EOF'
+{
+    WindowSwitcher: "prior-next",
+    WindowSwitcherPrevious: "prior-previous",
+}
+EOF
+cat >"$work/custom-bin/systemctl" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat >"$work/custom-bin/getent" <<EOF
+#!/bin/sh
+printf '%s\n' 'alice:x:500:500:Alice:$work/custom-home:/bin/bash'
+EOF
+cat >"$work/custom-bin/runuser" <<'EOF'
+#!/bin/sh
+shift 3
+exec "$@"
+EOF
+chmod +x "$work/custom-bin/systemctl" "$work/custom-bin/getent" "$work/custom-bin/runuser"
+
+custom_dpkg_options=(
+    --root="$work/custom-root"
+    --log="$work/custom-dpkg.log"
+    --force-not-root,script-chrootless,depends
+)
+dpkg "${custom_dpkg_options[@]}" --install "$package"
+HOME="$work/custom-home" \
+XDG_CONFIG_HOME="$work/custom-config" \
+XDG_STATE_HOME="$work/custom-state" \
+XDG_CURRENT_DESKTOP=COSMIC \
+XDG_SESSION_TYPE=wayland \
+COSMIC_WINDOW_SWITCHER_SYSTEMCTL="$work/custom-bin/systemctl" \
+    "$work/custom-root/usr/bin/cosmic-window-switcher" enable
+
+locator="$work/custom-home/.local/state/cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/uninstall-environment"
+[[ -f $locator ]] || fail "enablement did not record custom XDG paths for package removal"
+
+COSMIC_WINDOW_SWITCHER_GETENT="$work/custom-bin/getent" \
+COSMIC_WINDOW_SWITCHER_RUNUSER="$work/custom-bin/runuser" \
+COSMIC_WINDOW_SWITCHER_BINARY="$work/custom-root/usr/bin/cosmic-window-switcher" \
+COSMIC_WINDOW_SWITCHER_SYSTEMCTL="$work/custom-bin/systemctl" \
+    dpkg "${custom_dpkg_options[@]}" --remove cosmic-window-switcher
+
+custom_shortcuts=$(cat "$work/custom-config/cosmic/com.system76.CosmicSettings.Shortcuts/v1/system_actions")
+contains "$custom_shortcuts" "prior-next"
+contains "$custom_shortcuts" "prior-previous"
+[[ $custom_shortcuts != *"/usr/bin/cosmic-window-switcher"* ]] || \
+    fail "removal left custom-XDG semantic commands pointing at the removed executable"
 
 echo "package artifact contract passed: $package"

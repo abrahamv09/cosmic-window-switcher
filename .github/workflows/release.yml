@@ -27,6 +27,8 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Build, test, and verify release artifacts
         run: scripts/prepare-release-artifacts.sh target/release-artifacts
+      - name: Require physical release validation
+        run: scripts/verify-release-attestation.sh target/release-artifacts/cosmic-window-switcher_*-1_amd64.deb
       - name: Sign checksum manifest
         env:
           RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}

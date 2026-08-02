@@ -69,6 +69,15 @@ Measure and record:
 Do not replace `Pending` with `Pass` without retaining the measurements and
 manual observations for that exact checksum.
 
+After both machines pass, update `release/v1-validation.json` with the exact
+`.deb` SHA-256, `passed` statuses, evidence locations, validator, and ISO-8601
+date. The tag workflow refuses to sign or publish while that machine-readable
+attestation is pending or does not match the built package. Check it locally:
+
+```sh
+scripts/verify-release-attestation.sh target/release-artifacts/cosmic-window-switcher_0.1.0-1_amd64.deb
+```
+
 ## GitHub Release gate
 
 - The tag version matches the Debian and Cargo versions.

@@ -31,6 +31,7 @@ fn lifecycle_command(sandbox: &TempDir, command: &str) -> Command {
     let mut process = Command::new(binary());
     process
         .arg(command)
+        .env("HOME", sandbox.path().join("home"))
         .env("XDG_CURRENT_DESKTOP", "COSMIC")
         .env("XDG_SESSION_TYPE", "wayland")
         .env("XDG_CONFIG_HOME", sandbox.path().join("config"))
@@ -56,6 +57,7 @@ fn isolated_bus_command(sandbox: &TempDir, command: &str) -> Command {
         .arg("--")
         .arg(binary())
         .arg(command)
+        .env("HOME", sandbox.path().join("home"))
         .env("XDG_CURRENT_DESKTOP", "COSMIC")
         .env("XDG_SESSION_TYPE", "wayland")
         .env("XDG_CONFIG_HOME", sandbox.path().join("config"))

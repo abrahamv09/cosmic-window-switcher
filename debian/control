@@ -22,9 +22,10 @@ Depends:
  systemd,
  ${misc:Depends},
  ${shlibs:Depends},
-Description: native MRU Window switcher for the COSMIC desktop
- COSMIC Window Switcher provides a resident per-user service and a temporary,
- keyboard-driven grid of open Windows with live thumbnails. Integration is
- inert after installation and must be explicitly enabled by each user.
+Description: native COSMIC Window Switcher with Live Thumbnails
+ COSMIC Window Switcher provides a resident per-user Switcher Service and a
+ temporary, keyboard-driven Switcher Grid of open Windows with Live Thumbnails.
+ Integration is inert after installation and must be explicitly enabled by
+ each user.
  .
  This build supports Pop!_OS 24.04 COSMIC Wayland sessions on amd64 only.

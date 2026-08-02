@@ -1,8 +1,8 @@
 # COSMIC Window Switcher 0.1.0
 
-This release is built and validated only for Pop!_OS 24.04 COSMIC Wayland
-sessions on `amd64`. It does not claim support for GNOME, Ubuntu, Xorg, another
-desktop session, or another architecture.
+This release supports only Pop!_OS 24.04 COSMIC Wayland sessions on `amd64`.
+It does not claim support for GNOME, Ubuntu, Xorg, another desktop session, or
+another architecture.
 
 Installation is inert. Read `install-and-recovery.md` from the package or
 repository, authenticate `SHA256SUMS` with the accompanying maintainer

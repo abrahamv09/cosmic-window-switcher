@@ -6,6 +6,10 @@ Files: *
 Copyright: 2026 Abraham V.
 License: GPL-3.0-only
 
+Files: data/io.github.abrahamv09.CosmicWindowSwitcher.metainfo.xml
+Copyright: 2026 Abraham V.
+License: CC0-1.0
+
 License: GPL-3.0-only
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,3 +19,8 @@ License: GPL-3.0-only
  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
  FOR A PARTICULAR PURPOSE. See /usr/share/common-licenses/GPL-3 for the full
  license text.
+
+License: CC0-1.0
+ To the extent possible under law, the author has waived all copyright and
+ related or neighboring rights to the AppStream catalog metadata. See
+ /usr/share/common-licenses/CC0-1.0 for the full legal text.

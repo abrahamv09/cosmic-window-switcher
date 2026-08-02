@@ -2,7 +2,8 @@
 
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::PathBuf,
     process::Command,
 };
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 const STATE_VERSION: u64 = 1;
 const STATE_KEY: &str = "integration";
+const UNINSTALL_ENVIRONMENT_FILE: &str = "uninstall-environment";
 const SERVICE_UNIT: &str = "cosmic-window-switcher.service";
 const SYSTEMCTL: &str = "/usr/bin/systemctl";
 const SYSTEMCTL_OVERRIDE: &str = "COSMIC_WINDOW_SWITCHER_SYSTEMCTL";
@@ -69,6 +71,7 @@ pub(super) fn enable() -> Result<()> {
     let _lock = LifecycleLock::acquire()?;
     let state_store = state_store()?;
     let state = recover_interrupted_enable(&state_store, load_state(&state_store)?)?;
+    record_uninstall_environment()?;
 
     if matches!(state, IntegrationState::Enabled(_)) {
         return activate_service();
@@ -88,6 +91,7 @@ pub(super) fn enable() -> Result<()> {
         save_state(&state_store, &IntegrationState::Disabled).with_context(|| {
             format!("clear pending enablement after shortcut write failed: {shortcut_error}")
         })?;
+        remove_uninstall_environment()?;
         return Err(shortcut_error);
     }
 
@@ -128,7 +132,8 @@ pub(super) fn disable(for_uninstall: bool) -> Result<()> {
         let shortcut_context = shortcut_context()?;
         restore_owned_commands(&shortcut_context, &previous)?;
     }
-    save_state(&state_store, &IntegrationState::Disabled)
+    save_state(&state_store, &IntegrationState::Disabled)?;
+    remove_uninstall_environment()
 }
 
 pub(super) fn prepare_invocation() -> Result<InvocationLifecycle> {
@@ -156,6 +161,7 @@ pub(super) fn prepare_service_start() -> Result<bool> {
     restore_owned_commands(&shortcut_context, &previous)?;
     control_service(ServiceOperation::DisableWithoutStopping)?;
     save_state(&state_store, &IntegrationState::Disabled)?;
+    remove_uninstall_environment()?;
     Ok(false)
 }
 
@@ -223,6 +229,7 @@ fn recover_interrupted_enable(
         }
     }
     save_state(state_store, &IntegrationState::Disabled)?;
+    remove_uninstall_environment()?;
     Ok(IntegrationState::Disabled)
 }
 
@@ -239,6 +246,7 @@ fn disable_for_uninstall() -> Result<()> {
         restore_owned_commands(&shortcut_context, &previous)?;
     }
     save_state(&state_store, &IntegrationState::Disabled)?;
+    remove_uninstall_environment()?;
     let _service_cleanup = control_service(ServiceOperation::Disable);
     Ok(())
 }
@@ -262,6 +270,11 @@ fn fail_enablement(
         && let Err(error) = save_state(state_store, &IntegrationState::Disabled)
     {
         rollback_failures.push(format!("clearing the lifecycle journal failed: {error}"));
+    }
+    if rollback_failures.is_empty()
+        && let Err(error) = remove_uninstall_environment()
+    {
+        rollback_failures.push(format!("clearing the uninstall locator failed: {error}"));
     }
     if rollback_failures.is_empty() {
         return Err(enable_error);
@@ -346,6 +359,81 @@ fn write_system_actions(context: &Config, system_actions: &SystemActions) -> Res
 
 fn state_store() -> Result<Config> {
     Config::new_state(APPLICATION_ID, STATE_VERSION).context("open integration lifecycle state")
+}
+
+fn record_uninstall_environment() -> Result<()> {
+    let config_home = xdg_home("XDG_CONFIG_HOME", ".config")?;
+    let state_home = xdg_home("XDG_STATE_HOME", ".local/state")?;
+    let config_home = portable_path(&config_home, "XDG_CONFIG_HOME")?;
+    let state_home = portable_path(&state_home, "XDG_STATE_HOME")?;
+    let path = uninstall_environment_path()?;
+    let directory = path
+        .parent()
+        .context("locate the uninstall environment directory")?;
+    fs::create_dir_all(directory).context("create the uninstall environment directory")?;
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    let write_result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&temporary)
+            .context("create the uninstall environment transaction")?;
+        writeln!(file, "config_home={config_home}")?;
+        writeln!(file, "state_home={state_home}")?;
+        file.sync_all()
+            .context("flush the uninstall environment transaction")?;
+        fs::rename(&temporary, &path).context("commit the uninstall environment transaction")?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _cleanup = fs::remove_file(temporary);
+    }
+    write_result
+}
+
+fn remove_uninstall_environment() -> Result<()> {
+    let path = uninstall_environment_path()?;
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("remove the uninstall environment locator"),
+    }
+}
+
+fn uninstall_environment_path() -> Result<PathBuf> {
+    Ok(user_home()?
+        .join(".local/state/cosmic")
+        .join(APPLICATION_ID)
+        .join(format!("v{STATE_VERSION}"))
+        .join(UNINSTALL_ENVIRONMENT_FILE))
+}
+
+fn xdg_home(variable: &str, fallback: &str) -> Result<PathBuf> {
+    if let Some(value) = std::env::var_os(variable).filter(|value| !value.is_empty()) {
+        return Ok(PathBuf::from(value));
+    }
+    Ok(user_home()?.join(fallback))
+}
+
+fn user_home() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .context("locate the user home directory")
+}
+
+fn portable_path<'a>(path: &'a std::path::Path, label: &str) -> Result<&'a str> {
+    if !path.is_absolute() {
+        anyhow::bail!("{label} is not an absolute path");
+    }
+    let value = path
+        .to_str()
+        .with_context(|| format!("{label} is not valid UTF-8"))?;
+    if value.contains(['\n', '\r']) {
+        anyhow::bail!("{label} contains a line break");
+    }
+    Ok(value)
 }
 
 fn load_state(store: &Config) -> Result<IntegrationState> {

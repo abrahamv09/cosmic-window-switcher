@@ -44,7 +44,18 @@ and signed GitHub publication remain
   all-target/all-feature Clippy, all 122 tests, AppStream validation, package
   and maintainer-script syntax, isolated lifecycle checks, and release checksum
   verification. The final local `.deb` SHA-256 is
-  `97dfb4e1e1b5226ca4051f426184dfa58d586d4038714b07df315a37e68f7e99`.
+  `f2901604007ba5610fd9ecbebd558cf56b1eb47e7e0088e960d77a83368f24ef`.
+- The two-axis review identified ambiguous domain wording, an undocumented
+  AppStream metadata-license exception, incomplete custom-XDG uninstall
+  recovery, a package test that logged rather than executed uninstall cleanup,
+  a same-version upgrade simulation, and publication without a physical-test
+  gate. Enablement now writes an atomic fixed-location locator for the user's
+  actual XDG config/state paths; package removal executes the packaged
+  ownership-safe disable for any non-root UID and aborts on missing, corrupt, or
+  failed recovery. The artifact test verifies restored custom-XDG shortcut
+  values across a real lower-version upgrade. Domain metadata and licensing are
+  explicit, and tag publication requires a checksum-matched two-machine
+  attestation with retained evidence.
 - Human handoff: run and record the complete manual/performance matrix on the
   development laptop and MSI Aegis ZS2, configure `RELEASE_GPG_PRIVATE_KEY`,
   publish the version tag, download and independently verify the signed Release,

@@ -23,14 +23,44 @@ while IFS=: read -r user _ uid _ _ home _; do
             continue
             ;;
     esac
-    [ "$uid" -ge 1000 ] || continue
+    [ "$uid" -ne 0 ] || continue
     [ -n "$home" ] || continue
-    [ -f "$home/.local/state/cosmic/$application_id/v1/integration" ] || continue
 
+    locator="$home/.local/state/cosmic/$application_id/v1/uninstall-environment"
+    if [ -f "$locator" ]; then
+        config_home=$(/usr/bin/sed -n 's/^config_home=//p' "$locator")
+        state_home=$(/usr/bin/sed -n 's/^state_home=//p' "$locator")
+        case $config_home:$state_home in
+            *'
+'*|:*|*:)
+                echo "cosmic-window-switcher: invalid uninstall locator for $user" >&2
+                cleanup_failed=1
+                continue
+                ;;
+        esac
+        if [ ! -f "$state_home/cosmic/$application_id/v1/integration" ]; then
+            echo "cosmic-window-switcher: uninstall locator for $user has no lifecycle journal" >&2
+            cleanup_failed=1
+            continue
+        fi
+    else
+        config_home="$home/.config"
+        state_home="$home/.local/state"
+        [ -f "$state_home/cosmic/$application_id/v1/integration" ] || continue
+    fi
+    case $config_home:$state_home in
+        /*:/*)
+            ;;
+        *)
+            echo "cosmic-window-switcher: invalid uninstall locator for $user" >&2
+            cleanup_failed=1
+            continue
+            ;;
+    esac
     if ! "$runuser_command" -u "$user" -- /usr/bin/env \
         "HOME=$home" \
-        "XDG_CONFIG_HOME=$home/.config" \
-        "XDG_STATE_HOME=$home/.local/state" \
+        "XDG_CONFIG_HOME=$config_home" \
+        "XDG_STATE_HOME=$state_home" \
         "XDG_RUNTIME_DIR=/run/user/$uid" \
         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" \
         "$switcher_binary" disable --uninstall
