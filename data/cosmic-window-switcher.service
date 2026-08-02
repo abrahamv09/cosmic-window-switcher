@@ -1,0 +1,13 @@
+[Unit]
+Description=COSMIC Window Switcher resident service
+PartOf=cosmic-session.target
+After=cosmic-comp.service
+
+[Service]
+Type=dbus
+BusName=io.github.abrahamv09.CosmicWindowSwitcher
+ExecStart=/usr/bin/cosmic-window-switcher service
+Restart=on-failure
+
+[Install]
+WantedBy=cosmic-session.target

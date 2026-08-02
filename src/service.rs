@@ -110,6 +110,10 @@ pub fn status() -> Result<ServiceDiagnostics> {
     diagnostics::status()
 }
 
+pub fn running() -> bool {
+    diagnostics::running()
+}
+
 pub fn invoke(direction: InvocationDirection) -> Result<()> {
     invocation::invoke(direction)
 }

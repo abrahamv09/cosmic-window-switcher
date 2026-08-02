@@ -3,8 +3,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use zbus::{
-    blocking::{Connection, Proxy, connection},
+    blocking::{Connection, Proxy, connection, fdo::DBusProxy},
     fdo::{RequestNameFlags, RequestNameReply},
+    names::BusName,
     zvariant::Type,
 };
 
@@ -55,6 +56,17 @@ pub(super) fn status() -> Result<ServiceDiagnostics> {
             Ok(diagnostics.into())
         }
     }
+}
+
+pub(super) fn running() -> bool {
+    let Ok(connection) = Connection::session() else {
+        return false;
+    };
+    let Ok(proxy) = DBusProxy::new(&connection) else {
+        return false;
+    };
+    let name = BusName::try_from(BUS_NAME).expect("the application ID is a valid D-Bus name");
+    proxy.name_has_owner(name).unwrap_or(false)
 }
 
 #[derive(Deserialize, Serialize, Type)]

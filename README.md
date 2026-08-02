@@ -75,23 +75,52 @@ not the finished switcher service.
 
 ## Run the Switcher Service
 
-Start the resident service from a COSMIC Wayland session:
+Package installation is inert: it neither starts the resident service nor
+changes COSMIC shortcuts. After installation, explicitly enable the integration
+from a COSMIC Wayland session:
+
+```sh
+cosmic-window-switcher enable
+```
+
+Enablement starts `cosmic-window-switcher.service` with the COSMIC user session
+and changes only the user-level commands for the existing `WindowSwitcher` and
+`WindowSwitcherPrevious` semantic actions. COSMIC Settings continues to own the
+key-to-action bindings. The prior command values are recorded before the atomic
+shortcut update.
+
+For development without the installed user unit, start the resident service
+directly from a COSMIC Wayland session:
 
 ```sh
 cargo run --release -- service
 ```
 
-Only one process can own the service's user-session D-Bus name. In another
-terminal, inspect the current MRU Order:
+Only one process can own the service's user-session D-Bus name. Inspect service,
+capability, Capture Backend, MRU Warm-up, and shortcut-ownership health with:
 
 ```sh
-cargo run --release -- status
+cosmic-window-switcher status
+cosmic-window-switcher doctor
 ```
 
-`status` reports either `mru_history: accurate` or `mru_history: warm-up`. MRU
-Warm-up means the service restarted with pre-existing Windows whose relative
-focus history cannot be reconstructed. Opaque Window identities are shown so
-the MRU Order can be verified; Window titles and pixels are never included.
+When the service is running, both commands report either `mru_history: accurate`
+or `mru_history: warm-up`. MRU Warm-up means the service restarted with
+pre-existing Windows whose relative focus history cannot be reconstructed.
+Opaque Window identities are shown so the MRU Order can be verified; Window
+titles and pixels are never included.
+
+Return to the stock switcher before removing the package with:
+
+```sh
+cosmic-window-switcher disable
+```
+
+Disablement stops the resident service and restores or removes a semantic
+command only while its current value still matches the app-owned invocation.
+Manual command edits made after enablement are left intact. Repeating either
+lifecycle command is safe. GNOME, Ubuntu, Xorg, and other non-COSMIC sessions
+are rejected before the service or shortcut configuration is touched.
 
 ## Configure the switcher
 

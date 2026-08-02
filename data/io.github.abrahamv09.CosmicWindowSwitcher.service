@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=io.github.abrahamv09.CosmicWindowSwitcher
+Exec=/usr/bin/cosmic-window-switcher service
+SystemdService=cosmic-window-switcher.service

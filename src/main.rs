@@ -5,6 +5,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use cosmic_window_switcher::{InvocationDirection, Locale, StringKey};
 
 mod cosmic_session;
+mod lifecycle;
 mod probe;
 mod service;
 mod settings;
@@ -20,7 +21,10 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     Service,
+    Enable,
+    Disable,
     Status,
+    Doctor,
     Settings,
     Invoke {
         #[command(subcommand)]
@@ -70,12 +74,17 @@ fn main() -> Result<()> {
     let cli = Cli::from_arg_matches(&matches).expect("Clap generated and parsed the same command");
     match cli.command {
         Command::Service => service::run(),
-        Command::Status => {
-            println!("{}", service::status()?.localized(locale));
+        Command::Enable => lifecycle::enable(),
+        Command::Disable => lifecycle::disable(),
+        Command::Status | Command::Doctor => {
+            println!("{}", lifecycle::diagnostics(locale)?);
             Ok(())
         }
         Command::Settings => settings::run(),
-        Command::Invoke { direction } => service::invoke(direction.into()),
+        Command::Invoke { direction } => {
+            cosmic_session::verify("Window switch invocation")?;
+            service::invoke(direction.into())
+        }
         Command::Probe {
             include_titles,
             live_thumbnails,
@@ -105,8 +114,17 @@ fn localized_command(locale: Locale) -> clap::Command {
         .mut_subcommand("service", |command| {
             localized_command_frame(command, locale).about(locale.text(StringKey::CliService))
         })
+        .mut_subcommand("enable", |command| {
+            localized_command_frame(command, locale).about(locale.text(StringKey::CliEnable))
+        })
+        .mut_subcommand("disable", |command| {
+            localized_command_frame(command, locale).about(locale.text(StringKey::CliDisable))
+        })
         .mut_subcommand("status", |command| {
             localized_command_frame(command, locale).about(locale.text(StringKey::CliStatus))
+        })
+        .mut_subcommand("doctor", |command| {
+            localized_command_frame(command, locale).about(locale.text(StringKey::CliDoctor))
         })
         .mut_subcommand("settings", |command| {
             localized_command_frame(command, locale).about(locale.text(StringKey::CliSettings))
