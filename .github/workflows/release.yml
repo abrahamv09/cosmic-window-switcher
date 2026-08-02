@@ -1,0 +1,55 @@
+name: Signed release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Debian packaging tools
+        run: sudo apt-get update && sudo apt-get install --yes debhelper libxkbcommon-dev pkg-config
+      - name: Match tag and package versions
+        run: test "$GITHUB_REF_NAME" = "v$(dpkg-parsechangelog -SVersion | sed 's/-[^-]*$//')"
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Build, test, and verify release artifacts
+        run: scripts/prepare-release-artifacts.sh target/release-artifacts
+      - name: Sign checksum manifest
+        env:
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+        run: |
+          test -n "$RELEASE_GPG_PRIVATE_KEY"
+          printf '%s' "$RELEASE_GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --batch --yes --armor --detach-sign \
+            --output target/release-artifacts/SHA256SUMS.asc \
+            target/release-artifacts/SHA256SUMS
+          gpg --verify \
+            target/release-artifacts/SHA256SUMS.asc \
+            target/release-artifacts/SHA256SUMS
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --title "COSMIC Window Switcher $GITHUB_REF_NAME" \
+            --notes-file docs/release-notes-v1.md \
+            target/release-artifacts/*.deb \
+            target/release-artifacts/*.ddeb \
+            target/release-artifacts/*.buildinfo \
+            target/release-artifacts/*.changes \
+            target/release-artifacts/SHA256SUMS \
+            target/release-artifacts/SHA256SUMS.asc

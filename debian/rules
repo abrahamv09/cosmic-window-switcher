@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --locked --release
+
+override_dh_auto_test:
+	cargo test --locked --all-targets --all-features
+
+override_dh_installsystemduser:
+	# Integration is explicitly enabled by the application, never by dpkg.
+	:

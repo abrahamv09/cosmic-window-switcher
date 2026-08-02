@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.abrahamv09.CosmicWindowSwitcher</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>COSMIC Window Switcher</name>
+  <name xml:lang="es">Selector de ventanas de COSMIC</name>
+  <summary>Switch between COSMIC Windows using live thumbnails and MRU order</summary>
+  <summary xml:lang="es">Cambia entre ventanas de COSMIC con miniaturas en vivo y orden MRU</summary>
+  <description>
+    <p>A native, keyboard-driven Window switcher for COSMIC with live thumbnails, predictable MRU order, and a reversible shortcut integration.</p>
+    <p xml:lang="es">Un selector de ventanas nativo para COSMIC con miniaturas en vivo, orden MRU predecible e integración de atajos reversible.</p>
+  </description>
+  <launchable type="desktop-id">io.github.abrahamv09.CosmicWindowSwitcher.desktop</launchable>
+  <url type="homepage">https://github.com/abrahamv09/cosmic-window-switcher</url>
+  <url type="bugtracker">https://github.com/abrahamv09/cosmic-window-switcher/issues</url>
+  <developer id="io.github.abrahamv09">
+    <name>Abraham V.</name>
+  </developer>
+  <provides>
+    <binary>cosmic-window-switcher</binary>
+  </provides>
+  <releases>
+    <release version="0.1.0" date="2026-08-02" type="stable"/>
+  </releases>
+  <content_rating type="oars-1.1"/>
+</component>

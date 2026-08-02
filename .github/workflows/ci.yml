@@ -24,3 +24,27 @@ jobs:
         run: cargo test --all-targets --all-features
       - name: Build release executable
         run: cargo build --release
+
+  debian-package:
+    needs: rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Debian packaging tools
+        run: sudo apt-get update && sudo apt-get install --yes debhelper libxkbcommon-dev pkg-config
+      - name: Build and verify release artifacts
+        env:
+          DEB_BUILD_OPTIONS: nocheck
+        run: scripts/prepare-release-artifacts.sh target/release-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cosmic-window-switcher-amd64-release-inputs
+          path: |
+            target/release-artifacts/*.deb
+            target/release-artifacts/*.ddeb
+            target/release-artifacts/*.buildinfo
+            target/release-artifacts/*.changes
+            target/release-artifacts/SHA256SUMS
+          if-no-files-found: error

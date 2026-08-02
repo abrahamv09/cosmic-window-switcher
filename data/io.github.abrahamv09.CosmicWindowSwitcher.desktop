@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=COSMIC Window Switcher
+Name[es]=Selector de ventanas de COSMIC
+Comment=Configure the COSMIC Window Switcher
+Comment[es]=Configura el selector de ventanas de COSMIC
+Exec=cosmic-window-switcher settings
+Icon=io.github.abrahamv09.CosmicWindowSwitcher
+Terminal=false
+Categories=COSMIC;Settings;Utility;
+Keywords=window;switcher;thumbnail;keyboard;COSMIC;
+Keywords[es]=ventana;selector;miniatura;teclado;COSMIC;
+OnlyShowIn=COSMIC;
+StartupNotify=true

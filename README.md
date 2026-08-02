@@ -75,6 +75,15 @@ not the finished switcher service.
 
 ## Run the Switcher Service
 
+Version 1 packages support only Pop!_OS 24.04 COSMIC Wayland on `amd64`.
+Authenticate the downloaded checksum manifest and package, then install it:
+
+```sh
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum --check SHA256SUMS
+sudo apt install ./cosmic-window-switcher_0.1.0-1_amd64.deb
+```
+
 Package installation is inert: it neither starts the resident service nor
 changes COSMIC shortcuts. After installation, explicitly enable the integration
 from a COSMIC Wayland session:
@@ -125,6 +134,11 @@ The package-removal workflow can call the internal
 `disable --uninstall` cleanup path without a graphical-session environment; it
 applies the same ownership checks and treats service shutdown as best effort so
 shortcut restoration is not skipped during removal.
+
+The complete install, manual shortcut, upgrade, disable, removal, purge, and
+capability-recovery procedures are in
+[Install and recovery](docs/install-and-recovery.md). Release candidates use
+the two-machine [version 1 release validation](docs/release-validation.md).
 
 ## Configure the switcher
 

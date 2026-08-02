@@ -1,0 +1,30 @@
+Source: cosmic-window-switcher
+Section: utils
+Priority: optional
+Maintainer: Abraham V. <abrahamv09@users.noreply.github.com>
+Build-Depends:
+ cargo (>= 1.95),
+ debhelper-compat (= 13),
+ libxkbcommon-dev,
+ pkg-config,
+ rustc (>= 1.95),
+Standards-Version: 4.7.2
+Homepage: https://github.com/abrahamv09/cosmic-window-switcher
+Rules-Requires-Root: no
+
+Package: cosmic-window-switcher
+Architecture: amd64
+Depends:
+ cosmic-comp (>= 0.1~1785277801~24.04~ffeda33),
+ cosmic-launcher (>= 1.0.12~1785249651~24.04~8799503),
+ cosmic-settings (>= 1.0.12~1785277759~24.04~7287257),
+ dbus-user-session,
+ systemd,
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: native MRU Window switcher for the COSMIC desktop
+ COSMIC Window Switcher provides a resident per-user service and a temporary,
+ keyboard-driven grid of open Windows with live thumbnails. Integration is
+ inert after installation and must be explicitly enabled by each user.
+ .
+ This build supports Pop!_OS 24.04 COSMIC Wayland sessions on amd64 only.

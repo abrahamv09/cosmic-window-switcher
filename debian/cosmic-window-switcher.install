@@ -1,0 +1,10 @@
+target/release/cosmic-window-switcher usr/bin/
+data/cosmic-window-switcher.service usr/lib/systemd/user/
+data/io.github.abrahamv09.CosmicWindowSwitcher.service usr/share/dbus-1/services/
+data/io.github.abrahamv09.CosmicWindowSwitcher.desktop usr/share/applications/
+data/io.github.abrahamv09.CosmicWindowSwitcher.metainfo.xml usr/share/metainfo/
+data/io.github.abrahamv09.CosmicWindowSwitcher.svg usr/share/icons/hicolor/scalable/apps/
+data/defaults/* usr/share/cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/
+i18n/en/cosmic-window-switcher.ftl usr/share/cosmic-window-switcher/i18n/en/
+i18n/es/cosmic-window-switcher.ftl usr/share/cosmic-window-switcher/i18n/es/
+scripts/uninstall-users usr/lib/cosmic-window-switcher/

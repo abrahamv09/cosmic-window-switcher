@@ -1,1 +1,10 @@
 /target/
+/*.buildinfo
+/*.changes
+/*.deb
+/*.ddeb
+/debian/.debhelper/
+/debian/cosmic-window-switcher/
+/debian/*.substvars
+/debian/debhelper-build-stamp
+/debian/files

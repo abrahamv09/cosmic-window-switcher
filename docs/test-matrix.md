@@ -100,7 +100,10 @@ workspace_eligibility: unavailable
 workspace_eligibility_failure: zcosmic_toplevel_info_v1 v3 emitted no committed ext-workspace membership snapshot
 ```
 
-The live matrix above remains blocked on that compositor defect. Invocation
-must use the direction-preserving stock fallback until a compositor build
-provides the advertised snapshot; the client must not infer COSMIC Workspace
-Policy from a copied preference.
+This defect gates only the stricter Visible Workspaces scope. The default All
+Workspaces scope does not require per-Window membership, so the custom grid
+remains available and diagnostics report `workspace_filtering: not-required`.
+Live validation on 2026-07-30 confirmed that selecting a Window on another
+workspace activates its existing workspace and focuses it without relocation.
+The client continues to avoid inferring COSMIC Workspace Policy from copied or
+incomplete state.

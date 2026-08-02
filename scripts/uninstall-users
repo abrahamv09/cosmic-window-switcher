@@ -1,0 +1,45 @@
+#!/bin/sh
+
+set -u
+
+case ${1:-} in
+    remove|deconfigure)
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+getent_command=${COSMIC_WINDOW_SWITCHER_GETENT:-/usr/bin/getent}
+runuser_command=${COSMIC_WINDOW_SWITCHER_RUNUSER:-/usr/sbin/runuser}
+switcher_binary=${COSMIC_WINDOW_SWITCHER_BINARY:-/usr/bin/cosmic-window-switcher}
+application_id=io.github.abrahamv09.CosmicWindowSwitcher
+cleanup_failed=0
+passwd_entries=$("$getent_command" passwd) || exit 1
+
+while IFS=: read -r user _ uid _ _ home _; do
+    case $uid in
+        ''|*[!0-9]*)
+            continue
+            ;;
+    esac
+    [ "$uid" -ge 1000 ] || continue
+    [ -n "$home" ] || continue
+    [ -f "$home/.local/state/cosmic/$application_id/v1/integration" ] || continue
+
+    if ! "$runuser_command" -u "$user" -- /usr/bin/env \
+        "HOME=$home" \
+        "XDG_CONFIG_HOME=$home/.config" \
+        "XDG_STATE_HOME=$home/.local/state" \
+        "XDG_RUNTIME_DIR=/run/user/$uid" \
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" \
+        "$switcher_binary" disable --uninstall
+    then
+        echo "cosmic-window-switcher: could not restore integration for $user; run 'cosmic-window-switcher disable' before retrying removal" >&2
+        cleanup_failed=1
+    fi
+done <<EOF
+$passwd_entries
+EOF
+
+exit "$cleanup_failed"

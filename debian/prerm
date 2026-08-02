@@ -1,0 +1,12 @@
+#!/bin/sh
+
+set -e
+
+helper="${DPKG_ROOT:-}/usr/lib/cosmic-window-switcher/uninstall-users"
+if [ -x "$helper" ]; then
+    "$helper" "$1"
+fi
+
+#DEBHELPER#
+
+exit 0
