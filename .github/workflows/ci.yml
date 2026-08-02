@@ -16,6 +16,8 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Install native build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libxkbcommon-dev pkg-config
       - name: Check formatting
         run: cargo fmt --check
       - name: Lint
