@@ -73,8 +73,12 @@ COSMIC's authoritative mapping from key combinations to switcher invocation comm
 _Avoid_: Switcher keybinding, internal shortcut
 
 **Switcher Preferences**:
-The app-owned visual and performance settings persisted through a versioned `cosmic-config` schema: card size, background dimming, thumbnail refresh limit, animations, and reveal delay. They do not duplicate COSMIC Workspace Policy, COSMIC Accessibility Policy, or COSMIC Shortcut Policy.
+The app-owned visual, interaction, and performance settings persisted through a versioned `cosmic-config` schema: card size, background dimming, Hover Selection, thumbnail refresh limit, animations, and reveal delay. They do not duplicate COSMIC Workspace Policy, COSMIC Accessibility Policy, or COSMIC Shortcut Policy.
 _Avoid_: System settings, copied COSMIC settings
+
+**Hover Selection**:
+The opt-in Switcher Preference that lets pointer movement select the Switcher Item beneath the cursor. It is disabled by default; when disabled, keyboard selection remains stable and clicking a Switcher Item still activates it.
+_Avoid_: Mouse selection, pointer navigation
 
 **Session Preferences**:
 The immutable snapshot of Switcher Preferences taken when a Switching Session begins. Preference edits persist immediately but affect only later sessions, preventing an active Switcher Grid from changing beneath the user's selection.

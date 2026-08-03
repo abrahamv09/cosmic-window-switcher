@@ -105,6 +105,7 @@ fn accessibility_policy_overrides_presentation_without_mutating_preferences() {
         Dimming::Strong,
         RefreshCeiling::Fps60,
         true,
+        false,
         RevealDelay::Milliseconds200,
     );
     let session = preferences.snapshot();

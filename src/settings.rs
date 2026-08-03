@@ -129,6 +129,7 @@ enum Message {
     Dimming(Dimming),
     RefreshCeiling(RefreshCeiling),
     Animations(bool),
+    HoverSelection(bool),
     RevealDelay(RevealDelay),
     OpenKeyboardSettings,
 }
@@ -175,6 +176,10 @@ impl cosmic::Application for SettingsApp {
             Message::Animations(enabled) => {
                 self.preferences.clone().with_animations_enabled(enabled)
             }
+            Message::HoverSelection(enabled) => self
+                .preferences
+                .clone()
+                .with_hover_selection_enabled(enabled),
             Message::RevealDelay(reveal_delay) => {
                 self.preferences.clone().with_reveal_delay(reveal_delay)
             }
@@ -252,6 +257,12 @@ impl cosmic::Application for SettingsApp {
             .add(
                 settings::item::builder(text(StringKey::Animations))
                     .toggler(self.preferences.animations_enabled(), Message::Animations),
+            )
+            .add(
+                settings::item::builder(text(StringKey::SelectOnHover)).toggler(
+                    self.preferences.hover_selection_enabled(),
+                    Message::HoverSelection,
+                ),
             )
             .add(settings::item::builder(text(StringKey::RevealDelay)).control(reveal_delay));
 

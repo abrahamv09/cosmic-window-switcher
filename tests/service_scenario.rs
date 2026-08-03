@@ -573,7 +573,7 @@ fn prepared_session_uses_the_window_set_captured_with_the_invocation_request() {
 }
 
 #[test]
-fn pointer_entry_is_inert_until_motion_then_hover_selects_and_press_activates() {
+fn pointer_entry_is_inert_until_enabled_hover_selects_and_press_activates() {
     let mut service = service_with_mru_order(&["focused", "previous", "least-recent"]);
     service.invoke(InvocationRequest {
         direction: InvocationDirection::Next,
@@ -587,7 +587,17 @@ fn pointer_entry_is_inert_until_motion_then_hover_selects_and_press_activates() 
         Vec::<ServiceEffect>::new()
     );
     assert_eq!(
-        service.handle(ServiceEvent::PointerMoved(Some(window("least-recent")))),
+        service.handle(ServiceEvent::PointerMoved {
+            window: Some(window("least-recent")),
+            hover_selection_enabled: false,
+        }),
+        Vec::<ServiceEffect>::new()
+    );
+    assert_eq!(
+        service.handle(ServiceEvent::PointerMoved {
+            window: Some(window("least-recent")),
+            hover_selection_enabled: true,
+        }),
         vec![ServiceEffect::SelectionChanged(window("least-recent"))]
     );
     assert_eq!(

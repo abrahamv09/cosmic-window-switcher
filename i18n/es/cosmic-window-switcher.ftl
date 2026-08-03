@@ -15,6 +15,7 @@ fps-60 = 60 FPS
 match-display = Igualar la pantalla
 match-display-warning = Puede usar mucha más energía y recursos gráficos.
 animations = Animaciones
+select-on-hover = Seleccionar al pasar el cursor
 reveal-delay = Retraso de aparición
 milliseconds-20 = 20 ms
 milliseconds-40 = 40 ms

@@ -37,6 +37,7 @@ fn missing_preferences_load_the_documented_defaults() {
     assert_eq!(store.load().dimming(), Dimming::Light);
     assert_eq!(store.load().refresh_ceiling(), RefreshCeiling::Fps30);
     assert!(store.load().animations_enabled());
+    assert!(!store.load().hover_selection_enabled());
     assert_eq!(store.load().reveal_delay(), RevealDelay::Milliseconds100);
 }
 
@@ -76,6 +77,7 @@ fn saved_preferences_reload_from_cosmic_config() {
         Dimming::Strong,
         RefreshCeiling::MatchDisplay,
         false,
+        true,
         RevealDelay::Milliseconds200,
     );
 
@@ -105,6 +107,10 @@ fn invalid_fields_recover_independently_without_rewriting_them() {
         .expect("write an invalid animation preference");
     store
         .config()
+        .set("hover_selection_enabled", "sometimes")
+        .expect("write an invalid hover-selection preference");
+    store
+        .config()
         .set("reveal_delay", 999_u32)
         .expect("write an invalid reveal delay");
 
@@ -114,6 +120,7 @@ fn invalid_fields_recover_independently_without_rewriting_them() {
     assert_eq!(loaded.dimming(), Dimming::Strong);
     assert_eq!(loaded.refresh_ceiling(), RefreshCeiling::Fps30);
     assert!(loaded.animations_enabled());
+    assert!(!loaded.hover_selection_enabled());
     assert_eq!(loaded.reveal_delay(), RevealDelay::Milliseconds100);
     assert_eq!(
         store
@@ -169,6 +176,7 @@ fn legacy_values_migrate_in_memory_and_are_written_only_after_save() {
             Dimming::Off,
             RefreshCeiling::Fps60,
             false,
+            false,
             RevealDelay::Milliseconds100,
         )
     );
@@ -193,6 +201,7 @@ fn a_switching_session_keeps_the_preferences_snapshot_it_started_with() {
         Dimming::Off,
         RefreshCeiling::Fps15,
         false,
+        true,
         RevealDelay::Milliseconds200,
     );
 
@@ -200,6 +209,7 @@ fn a_switching_session_keeps_the_preferences_snapshot_it_started_with() {
     assert_eq!(session.dimming(), Dimming::Light);
     assert_eq!(session.refresh_ceiling(), RefreshCeiling::Fps30);
     assert!(session.animations_enabled());
+    assert!(!session.hover_selection_enabled());
     assert_eq!(session.reveal_delay(), RevealDelay::Milliseconds100);
     assert_ne!(session, edited.snapshot());
 }

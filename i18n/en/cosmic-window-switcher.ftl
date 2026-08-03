@@ -15,6 +15,7 @@ fps-60 = 60 FPS
 match-display = Match display
 match-display-warning = May use substantially more power and graphics resources.
 animations = Animations
+select-on-hover = Select on hover
 reveal-delay = Reveal delay
 milliseconds-20 = 20 ms
 milliseconds-40 = 40 ms

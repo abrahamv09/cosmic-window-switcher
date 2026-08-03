@@ -1828,7 +1828,13 @@ impl PointerHandler for ProtocolObserver {
                 }
                 PointerEventKind::Motion { .. } => {
                     let window = self.window_at_pointer(event.position);
-                    self.handle_service_event(ServiceEvent::PointerMoved(window));
+                    self.handle_service_event(ServiceEvent::PointerMoved {
+                        window,
+                        hover_selection_enabled: self
+                            .preferences
+                            .session
+                            .hover_selection_enabled(),
+                    });
                 }
                 PointerEventKind::Press { button, .. } if button == PRIMARY_BUTTON => {
                     let window = self.window_at_pointer(event.position);

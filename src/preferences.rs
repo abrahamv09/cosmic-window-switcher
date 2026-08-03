@@ -57,6 +57,7 @@ pub struct SwitcherPreferences {
     dimming: Dimming,
     refresh_ceiling: RefreshCeiling,
     animations_enabled: bool,
+    hover_selection_enabled: bool,
     reveal_delay: RevealDelay,
 }
 
@@ -67,6 +68,7 @@ impl Default for SwitcherPreferences {
             dimming: Dimming::Light,
             refresh_ceiling: RefreshCeiling::Fps30,
             animations_enabled: true,
+            hover_selection_enabled: false,
             reveal_delay: RevealDelay::Milliseconds100,
         }
     }
@@ -79,6 +81,7 @@ impl SwitcherPreferences {
         dimming: Dimming,
         refresh_ceiling: RefreshCeiling,
         animations_enabled: bool,
+        hover_selection_enabled: bool,
         reveal_delay: RevealDelay,
     ) -> Self {
         Self {
@@ -86,6 +89,7 @@ impl SwitcherPreferences {
             dimming,
             refresh_ceiling,
             animations_enabled,
+            hover_selection_enabled,
             reveal_delay,
         }
     }
@@ -108,6 +112,11 @@ impl SwitcherPreferences {
     #[must_use]
     pub const fn animations_enabled(&self) -> bool {
         self.animations_enabled
+    }
+
+    #[must_use]
+    pub const fn hover_selection_enabled(&self) -> bool {
+        self.hover_selection_enabled
     }
 
     #[must_use]
@@ -145,6 +154,12 @@ impl SwitcherPreferences {
     }
 
     #[must_use]
+    pub const fn with_hover_selection_enabled(mut self, hover_selection_enabled: bool) -> Self {
+        self.hover_selection_enabled = hover_selection_enabled;
+        self
+    }
+
+    #[must_use]
     pub const fn with_reveal_delay(mut self, reveal_delay: RevealDelay) -> Self {
         self.reveal_delay = reveal_delay;
         self
@@ -173,6 +188,11 @@ impl SessionPreferences {
     #[must_use]
     pub const fn animations_enabled(&self) -> bool {
         self.0.animations_enabled()
+    }
+
+    #[must_use]
+    pub const fn hover_selection_enabled(&self) -> bool {
+        self.0.hover_selection_enabled()
     }
 
     #[must_use]
@@ -225,6 +245,8 @@ impl PreferencesStore {
             self.read("animations_enabled")
                 .or_else(|| self.read("animate"))
                 .unwrap_or(defaults.animations_enabled()),
+            self.read("hover_selection_enabled")
+                .unwrap_or(defaults.hover_selection_enabled()),
             self.read("reveal_delay")
                 .or_else(|| self.legacy_reveal_delay())
                 .unwrap_or(defaults.reveal_delay()),
@@ -242,6 +264,10 @@ impl PreferencesStore {
         transaction.set("dimming", preferences.dimming())?;
         transaction.set("refresh_ceiling", preferences.refresh_ceiling())?;
         transaction.set("animations_enabled", preferences.animations_enabled())?;
+        transaction.set(
+            "hover_selection_enabled",
+            preferences.hover_selection_enabled(),
+        )?;
         transaction.set("reveal_delay", preferences.reveal_delay())?;
         transaction.commit()
     }

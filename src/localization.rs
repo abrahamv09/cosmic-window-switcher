@@ -153,6 +153,7 @@ string_keys!(
     MatchDisplay => "match-display",
     MatchDisplayWarning => "match-display-warning",
     Animations => "animations",
+    SelectOnHover => "select-on-hover",
     RevealDelay => "reveal-delay",
     Milliseconds20 => "milliseconds-20",
     Milliseconds40 => "milliseconds-40",

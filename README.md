@@ -21,7 +21,7 @@ you there without moving it.
 - Quick switching without showing the overlay on a short key press.
 - Keyboard and pointer navigation through a responsive card grid.
 - One window list across all workspaces.
-- Configurable card size, dimming, refresh rate, animation, and reveal delay.
+- Configurable card size, dimming, hover selection, refresh rate, animation, and reveal delay.
 - High-contrast, reduced-motion, and AT-SPI accessibility support.
 - English and Spanish interfaces.
 - Reversible shortcut integration with automatic fallback to COSMIC's stock
@@ -79,7 +79,9 @@ cosmic-window-switcher settings
 ```
 
 Settings are saved immediately and apply to the next switching session. Reveal
-delay options range from 20 to 200 ms; the default is 100 ms.
+delay options range from 20 to 200 ms; the default is 100 ms. **Select on
+hover** is disabled by default, so moving the pointer does not interrupt
+keyboard navigation; clicking a card still activates it.
 
 Useful diagnostics:
 

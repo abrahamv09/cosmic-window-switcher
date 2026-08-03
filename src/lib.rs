@@ -116,7 +116,10 @@ pub enum ServiceEvent {
     Switching(SwitchingEvent),
     Invocation(InvocationDirection),
     PointerEntered(Option<WindowId>),
-    PointerMoved(Option<WindowId>),
+    PointerMoved {
+        window: Option<WindowId>,
+        hover_selection_enabled: bool,
+    },
     PointerPressed(Option<WindowId>),
     PointerReleased(Option<WindowId>),
     SessionInterrupted(SessionInterruption),
@@ -1605,8 +1608,10 @@ impl ActiveSession {
             return SessionEffect::None;
         }
         match event {
-            ServiceEvent::PointerMoved(Some(window))
-                if self.pointer_press == PointerPress::None =>
+            ServiceEvent::PointerMoved {
+                window: Some(window),
+                hover_selection_enabled: true,
+            } if self.pointer_press == PointerPress::None =>
             {
                 self.session.select_window(&window)
             }
@@ -1629,7 +1634,7 @@ impl ActiveSession {
                 }
             }
             ServiceEvent::PointerEntered(_)
-            | ServiceEvent::PointerMoved(_)
+            | ServiceEvent::PointerMoved { .. }
             | ServiceEvent::PointerPressed(_) => SessionEffect::None,
             ServiceEvent::SessionReady
             | ServiceEvent::SessionReadinessFailed
@@ -1883,7 +1888,7 @@ impl SwitcherService {
                 })
             }
             event @ (ServiceEvent::PointerEntered(_)
-            | ServiceEvent::PointerMoved(_)
+            | ServiceEvent::PointerMoved { .. }
             | ServiceEvent::PointerPressed(_)
             | ServiceEvent::PointerReleased(_)) => {
                 self.apply_active_session_event(|active_session| {
