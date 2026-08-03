@@ -1611,10 +1611,7 @@ impl ActiveSession {
             ServiceEvent::PointerMoved {
                 window: Some(window),
                 hover_selection_enabled: true,
-            } if self.pointer_press == PointerPress::None =>
-            {
-                self.session.select_window(&window)
-            }
+            } if self.pointer_press == PointerPress::None => self.session.select_window(&window),
             ServiceEvent::PointerPressed(Some(window)) if self.session.contains(&window) => {
                 self.pointer_press = PointerPress::Item(window);
                 SessionEffect::None
