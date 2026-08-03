@@ -651,11 +651,7 @@ impl ProtocolObserver {
             .diagnostics();
         let complete_mru_order = diagnostics.mru_order;
         let window_scope = diagnostics.window_scope;
-        if let Some(direction) =
-            stock_fallback_for_incomplete_window_set(direction, complete_mru_order.len())
-        {
-            self.request_toplevel_resynchronization(queue_handle);
-            self.fallback(direction);
+        if self.recover_incomplete_tracking(direction, complete_mru_order.len(), queue_handle) {
             return;
         }
         if !self.management_can_activate || self.seat.is_none() {
@@ -705,15 +701,29 @@ impl ProtocolObserver {
             return;
         };
 
-        self.snapshot_session_preferences(&session_output);
+        self.prepare_switching_session(
+            &session_output,
+            context.eligible_windows,
+            direction,
+            queue_handle,
+        );
+    }
 
+    fn prepare_switching_session(
+        &mut self,
+        session_output: &wl_output::WlOutput,
+        session_window_order: Vec<WindowId>,
+        direction: InvocationDirection,
+        queue_handle: &QueueHandle<Self>,
+    ) {
+        self.snapshot_session_preferences(session_output);
         let surface = self.compositor.create_surface(queue_handle);
         let layer = self.layer_shell.create_layer_surface(
             queue_handle,
             surface,
             Layer::Overlay,
             Some(APPLICATION_ID),
-            Some(&session_output),
+            Some(session_output),
         );
         self.fractional_scale = self
             .fractional_scale_manager
@@ -729,8 +739,8 @@ impl ProtocolObserver {
         layer.set_size(0, 0);
         layer.commit();
         self.layer = Some(layer);
-        self.session_window_order = context.eligible_windows;
-        self.session_output = Some(session_output);
+        self.session_window_order = session_window_order;
+        self.session_output = Some(session_output.clone());
         self.grid = None;
         self.interaction = InteractionState::default();
         self.pending_direction = Some(direction);
@@ -738,6 +748,21 @@ impl ProtocolObserver {
         let now = Instant::now();
         self.reveal_at = Some(now + self.preferences.session.reveal_delay().duration());
         self.readiness_deadline = Some(now + SESSION_READINESS_TIMEOUT);
+    }
+
+    fn recover_incomplete_tracking(
+        &mut self,
+        direction: InvocationDirection,
+        window_count: usize,
+        queue_handle: &QueueHandle<Self>,
+    ) -> bool {
+        let Some(direction) = stock_fallback_for_incomplete_window_set(direction, window_count)
+        else {
+            return false;
+        };
+        self.request_toplevel_resynchronization(queue_handle);
+        self.fallback(direction);
+        true
     }
 
     fn request_toplevel_resynchronization(&mut self, queue_handle: &QueueHandle<Self>) {
