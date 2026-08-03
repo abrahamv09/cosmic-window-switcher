@@ -37,7 +37,7 @@ The degraded interval after the Switcher Service starts with pre-existing Window
 _Avoid_: Random order, restored history
 
 **Switcher Service**:
-The single resident per-user process that owns the COSMIC compositor connection, tracks MRU Order, and runs Switching Sessions. Shortcut commands and settings communicate with it through the user-session D-Bus.
+The single resident per-user process that owns the COSMIC compositor connection, tracks MRU Order, and runs Switching Sessions. Shortcut commands and settings communicate with it through the user-session D-Bus. If its Window tracking is temporarily incomplete, it delegates that Invocation Request to COSMIC's stock switcher and requests a fresh compositor snapshot before the next request.
 _Avoid_: Background app, capture daemon
 
 **Command Surface**:

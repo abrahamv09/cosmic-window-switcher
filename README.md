@@ -26,7 +26,8 @@ you there without moving it.
 - High-contrast, reduced-motion, and AT-SPI accessibility support.
 - English and Spanish interfaces.
 - Reversible shortcut integration with automatic fallback to COSMIC's stock
-  switcher when the custom overlay cannot start safely.
+  switcher when the custom overlay cannot start safely or Window tracking is
+  temporarily unavailable; the service refreshes tracking for the next use.
 - No telemetry and no window previews written to disk.
 
 ## Requirements

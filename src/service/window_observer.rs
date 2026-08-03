@@ -92,6 +92,13 @@ fn grid_navigation_direction(keysym: Keysym) -> Option<GridNavigationDirection> 
     }
 }
 
+fn stock_fallback_for_incomplete_window_set(
+    direction: InvocationDirection,
+    window_count: usize,
+) -> Option<InvocationDirection> {
+    (window_count < 2).then_some(direction)
+}
+
 fn advertised_global_version(globals: &GlobalList, interface: &str) -> Option<u32> {
     globals.contents().with_list(|list| {
         list.iter()
@@ -270,7 +277,7 @@ impl WindowObserver {
             toplevel_manager,
             workspace_state: WorkspaceState::new(&registry_state, &queue_handle),
             registry_state,
-            _foreign_toplevel_list: foreign_toplevel_list,
+            foreign_toplevel_list: Some(foreign_toplevel_list),
             cosmic_toplevel_info,
             capture_backend,
             capture_model: CaptureSessionModel::new(RefreshCeiling::Fps30),
@@ -498,7 +505,7 @@ struct ProtocolObserver {
     capture_backend: ShmCaptureState,
     capture_model: CaptureSessionModel,
     capture_clock: Instant,
-    _foreign_toplevel_list: ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+    foreign_toplevel_list: Option<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
     cosmic_toplevel_info: Option<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>,
     windows: Vec<ObservedWindow>,
     observations: ObservationLedger,
@@ -644,7 +651,11 @@ impl ProtocolObserver {
             .diagnostics();
         let complete_mru_order = diagnostics.mru_order;
         let window_scope = diagnostics.window_scope;
-        if complete_mru_order.len() < 2 {
+        if let Some(direction) =
+            stock_fallback_for_incomplete_window_set(direction, complete_mru_order.len())
+        {
+            self.request_toplevel_resynchronization(queue_handle);
+            self.fallback(direction);
             return;
         }
         if !self.management_can_activate || self.seat.is_none() {
@@ -667,7 +678,10 @@ impl ProtocolObserver {
             self.fallback(direction);
             return;
         };
-        if context.eligible_windows.len() < 2 {
+        if let Some(direction) =
+            stock_fallback_for_incomplete_window_set(direction, context.eligible_windows.len())
+        {
+            self.fallback(direction);
             return;
         }
         let Some(session_output) = complete_mru_order
@@ -724,6 +738,28 @@ impl ProtocolObserver {
         let now = Instant::now();
         self.reveal_at = Some(now + self.preferences.session.reveal_delay().duration());
         self.readiness_deadline = Some(now + SESSION_READINESS_TIMEOUT);
+    }
+
+    fn request_toplevel_resynchronization(&mut self, queue_handle: &QueueHandle<Self>) {
+        if self.foreign_toplevel_list.is_some() {
+            return;
+        }
+        match self.registry_state.bind_one::<
+            ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
+            _,
+            _,
+        >(queue_handle, 1..=1, GlobalData)
+        {
+            Ok(list) => {
+                self.foreign_toplevel_list = Some(list);
+                eprintln!("COSMIC Window tracking was empty; requested a fresh toplevel snapshot");
+            }
+            Err(error) => {
+                eprintln!(
+                    "COSMIC Window tracking was empty; could not request a fresh toplevel snapshot: {error:#}"
+                );
+            }
+        }
     }
 
     fn snapshot_session_preferences(&mut self, session_output: &wl_output::WlOutput) {
@@ -2186,7 +2222,10 @@ impl Dispatch<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, GlobalData
                 });
                 state.apply(Observation::Discovered(key));
             }
-            ext_foreign_toplevel_list_v1::Event::Finished => list.destroy(),
+            ext_foreign_toplevel_list_v1::Event::Finished => {
+                list.destroy();
+                state.foreign_toplevel_list = None;
+            }
             _ => {}
         }
     }
@@ -2424,14 +2463,14 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use cosmic_window_switcher::{
-        GridNavigationDirection, MruHistoryAccuracy, ServiceDiagnostics, SwitcherService, WindowId,
-        WindowScope, WorkspaceEligibilityState,
+        GridNavigationDirection, InvocationDirection, MruHistoryAccuracy, ServiceDiagnostics,
+        SwitcherService, WindowId, WindowScope, WorkspaceEligibilityState,
     };
     use smithay_client_toolkit::seat::keyboard::Keysym;
 
     use super::{
         Observation, ObservationKey, ObservationLedger, grid_navigation_direction,
-        normalize_wayland_read,
+        normalize_wayland_read, stock_fallback_for_incomplete_window_set,
     };
 
     #[test]
@@ -2447,6 +2486,22 @@ mod tests {
                 io::Error::from(io::ErrorKind::ConnectionReset)
             )))
             .is_err()
+        );
+    }
+
+    #[test]
+    fn incomplete_window_tracking_uses_the_stock_switcher_direction() {
+        assert_eq!(
+            stock_fallback_for_incomplete_window_set(InvocationDirection::Next, 0),
+            Some(InvocationDirection::Next)
+        );
+        assert_eq!(
+            stock_fallback_for_incomplete_window_set(InvocationDirection::Previous, 1),
+            Some(InvocationDirection::Previous)
+        );
+        assert_eq!(
+            stock_fallback_for_incomplete_window_set(InvocationDirection::Next, 2),
+            None
         );
     }
 
