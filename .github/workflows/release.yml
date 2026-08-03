@@ -25,7 +25,11 @@ jobs:
         run: cargo fmt --check
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Build, test, and verify release artifacts
+      - name: Test
+        run: cargo test --all-targets --all-features
+      - name: Build and verify release artifacts
+        env:
+          DEB_BUILD_OPTIONS: nocheck
         run: scripts/prepare-release-artifacts.sh target/release-artifacts
       - name: Require physical release validation
         run: scripts/verify-release-attestation.sh target/release-artifacts/cosmic-window-switcher_*-1_amd64.deb
