@@ -13,7 +13,7 @@ trusted channel, then authenticate the manifest and package:
 ```sh
 gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum --check SHA256SUMS
-sudo apt install ./cosmic-window-switcher_0.1.0-1_amd64.deb
+sudo apt install ./cosmic-window-switcher_0.2.0-1_amd64.deb
 ```
 
 Installation is inert. It installs the executable, settings launcher, icon,

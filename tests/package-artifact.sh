@@ -3,6 +3,7 @@
 set -euo pipefail
 
 package=${1:?usage: tests/package-artifact.sh PACKAGE.deb}
+expected_version=$(dpkg-parsechangelog -SVersion)
 
 fail() {
     echo "package contract failed: $*" >&2
@@ -21,7 +22,7 @@ contains() {
 
 [[ -f $package ]] || fail "package does not exist: $package"
 [[ $(field Package) == cosmic-window-switcher ]] || fail "unexpected package name"
-[[ $(field Version) == 0.1.0-1 ]] || fail "unexpected package version"
+[[ $(field Version) == "$expected_version" ]] || fail "unexpected package version"
 [[ $(field Architecture) == amd64 ]] || fail "release package must be amd64"
 
 depends=$(field Depends)
@@ -52,6 +53,7 @@ required_paths=(
     usr/share/cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/dimming
     usr/share/cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/refresh_ceiling
     usr/share/cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/animations_enabled
+    usr/share/cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/hover_selection_enabled
     usr/share/cosmic/io.github.abrahamv09.CosmicWindowSwitcher/v1/reveal_delay
     usr/share/cosmic-window-switcher/i18n/en/cosmic-window-switcher.ftl
     usr/share/cosmic-window-switcher/i18n/es/cosmic-window-switcher.ftl
