@@ -744,11 +744,13 @@ impl ProtocolObserver {
         if self.foreign_toplevel_list.is_some() {
             return;
         }
-        match self.registry_state.bind_one::<
-            ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1,
-            _,
-            _,
-        >(queue_handle, 1..=1, GlobalData)
+        match self
+            .registry_state
+            .bind_one::<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
+                queue_handle,
+                1..=1,
+                GlobalData,
+            )
         {
             Ok(list) => {
                 self.foreign_toplevel_list = Some(list);
