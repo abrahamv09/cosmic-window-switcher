@@ -21,7 +21,8 @@ you there without moving it.
 - Quick switching without showing the overlay on a short key press.
 - Keyboard and pointer navigation through a responsive card grid.
 - One window list across all workspaces.
-- Configurable card size, dimming, hover selection, refresh rate, animation, and reveal delay.
+- Configurable card size, dimming, hover selection, refresh rate, animation,
+  and reveal delay.
 - High-contrast, reduced-motion, and AT-SPI accessibility support.
 - English and Spanish interfaces.
 - Reversible shortcut integration with automatic fallback to COSMIC's stock
@@ -54,7 +55,7 @@ sha256sum --check SHA256SUMS
 Install the package:
 
 ```sh
-sudo apt install ./cosmic-window-switcher_0.1.0-1_amd64.deb
+sudo apt install ./cosmic-window-switcher_0.2.0-1_amd64.deb
 ```
 
 Installation does not alter your shortcuts or start the service. Enable the
