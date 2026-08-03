@@ -750,8 +750,7 @@ impl ProtocolObserver {
                 queue_handle,
                 1..=1,
                 GlobalData,
-            )
-        {
+            ) {
             Ok(list) => {
                 self.foreign_toplevel_list = Some(list);
                 eprintln!("COSMIC Window tracking was empty; requested a fresh toplevel snapshot");
