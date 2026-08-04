@@ -56,7 +56,7 @@ sha256sum --check SHA256SUMS
 Install the package:
 
 ```sh
-sudo apt install ./cosmic-window-switcher_0.2.0-1_amd64.deb
+sudo apt install ./cosmic-window-switcher_0.2.1-1_amd64.deb
 ```
 
 Installation does not alter your shortcuts or start the service. Enable the

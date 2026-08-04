@@ -21,6 +21,7 @@
     <binary>cosmic-window-switcher</binary>
   </provides>
   <releases>
+    <release version="0.2.1" date="2026-08-03" type="stable"/>
     <release version="0.2.0" date="2026-08-03" type="stable"/>
     <release version="0.1.0" date="2026-08-02" type="stable"/>
   </releases>

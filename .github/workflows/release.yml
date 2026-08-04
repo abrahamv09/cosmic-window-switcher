@@ -33,7 +33,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           run_id=$(gh api \
-            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=push&head_sha=$GITHUB_SHA&status=success" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?event=pull_request&head_sha=$GITHUB_SHA&status=success" \
             --jq '.workflow_runs[0].id // empty')
           test -n "$run_id"
           gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \

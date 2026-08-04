@@ -1,8 +1,8 @@
-# COSMIC Window Switcher 0.2.0
+# COSMIC Window Switcher 0.2.1
 
-This release adds **Select on hover**, an opt-in preference for pointer-driven
-Switcher Item selection. It is disabled by default, preserving uninterrupted
-keyboard navigation while retaining click-to-activate.
+This release recovers safely when the service temporarily loses its Window
+tracking: the current shortcut delegates to COSMIC's stock switcher while the
+service requests a fresh compositor snapshot for later requests.
 
 This release supports only Pop!_OS 24.04 COSMIC Wayland sessions on `amd64`.
 It does not claim support for GNOME, Ubuntu, Xorg, another desktop session, or

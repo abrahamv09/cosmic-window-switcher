@@ -75,7 +75,7 @@ date. The tag workflow refuses to sign or publish while that machine-readable
 attestation is pending or does not match the built package. Check it locally:
 
 ```sh
-scripts/verify-release-attestation.sh target/release-artifacts/cosmic-window-switcher_0.2.0-1_amd64.deb
+scripts/verify-release-attestation.sh target/release-artifacts/cosmic-window-switcher_0.2.1-1_amd64.deb
 ```
 
 ## GitHub Release gate

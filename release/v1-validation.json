@@ -1,14 +1,14 @@
 {
-  "version": "0.2.0",
-  "package_sha256": "b3f79d98015dbce8f57535b5c40e14ec9e19adc7f9d24fe2af8303a150a23445",
+  "version": "0.2.1",
+  "package_sha256": "PENDING",
   "development_laptop": {
-    "status": "passed",
-    "evidence": "Maintainer confirmed installation and functional testing of the exact CI-built candidate on the development laptop on 2026-08-03."
+    "status": "pending",
+    "evidence": "PENDING: validate the exact 0.2.1 CI-built candidate."
   },
   "msi_aegis_zs2": {
-    "status": "passed",
-    "evidence": "Maintainer confirmed installation and functional testing of the exact CI-built candidate on the MSI Aegis ZS2 on 2026-08-03."
+    "status": "pending",
+    "evidence": "PENDING: validate the exact 0.2.1 CI-built candidate."
   },
-  "attested_by": "Abraham Velazquez",
-  "attested_on": "2026-08-03"
+  "attested_by": "PENDING",
+  "attested_on": "PENDING"
 }
