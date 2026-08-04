@@ -39,7 +39,10 @@ jobs:
           gh run download "$run_id" --repo "$GITHUB_REPOSITORY" \
             --name cosmic-window-switcher-amd64-release-inputs \
             --dir target/release-artifacts
-          sha256sum --check target/release-artifacts/SHA256SUMS
+          (
+            cd target/release-artifacts
+            sha256sum --check SHA256SUMS
+          )
           tests/package-artifact.sh target/release-artifacts/cosmic-window-switcher_*-1_amd64.deb
       - name: Require physical release validation
         run: scripts/verify-release-attestation.sh target/release-artifacts/cosmic-window-switcher_*-1_amd64.deb
